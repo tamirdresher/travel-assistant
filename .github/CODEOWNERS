@@ -1,0 +1,15 @@
+# CODEOWNERS file mapping paths to squad owners
+# All paths map to @tamirdresher (virtual squad, single human user)
+# The labels below document the intended ownership by role:
+
+# DevOps Engineer → Gantz
+infra/* @tamirdresher
+
+# Backend Developer → Peres
+src/* @tamirdresher
+
+# Frontend Developer → Lapid
+web/* @tamirdresher
+
+# Squad meta files
+.squad/* @tamirdresher
