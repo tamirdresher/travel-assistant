@@ -2,7 +2,9 @@
 
 AI-powered travel planning assistant — ask about destinations, flights, hotels, and day-by-day itineraries.
 
-**Live demo:** _(URL added after first deploy — see [Deploy](#deploy))_
+**Live demo:** 👉 **https://web-sable-rho-16.vercel.app** 👈
+
+Open the link, type a question (e.g. _"plan 3 days in Tokyo"_), and you'll get an itinerary back. No login required.
 
 > Built so anyone in a meeting can open the link and try it. **No login, no account, no API key required** — it ships with a built-in demo mode.
 
