@@ -1,0 +1,17 @@
+{
+  "version": 2,
+  "dgSpecHash": "BLt2byA2L68=",
+  "success": false,
+  "projectFilePath": "C:\\temp\\squad-for-copilot\\src\\TravelAssistant.Api\\TravelAssistant.Api.csproj",
+  "expectedPackageFiles": [],
+  "logs": [
+    {
+      "code": "NU1301",
+      "level": "Error",
+      "message": "Failed to retrieve information about 'Swashbuckle.AspNetCore' from remote source 'https://api.nuget.org/v3-flatcontainer/swashbuckle.aspnetcore/index.json'.\r\n  No such host is known. (api.nuget.org:443)\r\n  No such host is known.",
+      "projectPath": "C:\\temp\\squad-for-copilot\\src\\TravelAssistant.Api\\TravelAssistant.Api.csproj",
+      "filePath": "C:\\temp\\squad-for-copilot\\src\\TravelAssistant.Api\\TravelAssistant.Api.csproj",
+      "targetGraphs": []
+    }
+  ]
+}
