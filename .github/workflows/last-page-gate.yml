@@ -1,0 +1,202 @@
+name: last-page-gate
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/web/src/navigation/**'
+      - 'apps/web/src/router/**'
+      - 'apps/web/**/*.ts'
+      - 'apps/web/**/*.tsx'
+      - 'tests/**/last-page**'
+      - 'docs/last-viewed-page/**'
+      - '.semgrep/last-page*.yml'
+      - '.github/workflows/last-page-gate.yml'
+  push:
+    branches: [feature/last-viewed-page]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+
+  contract-invariants:
+    name: Contract invariants (locked by LP-007)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Storage key literal — must be `ta.nav.lastPage.v1` (dot-form, versioned)
+        run: |
+          set -e
+          if ! grep -RnE "['\"]ta\.nav\.lastPage\.v1['\"]" apps/web/src/navigation/ ; then
+            echo "::error::storage key 'ta.nav.lastPage.v1' not found in apps/web/src/navigation/"
+            exit 1
+          fi
+          if grep -RnE "ta:nav:lastPage|ta\.nav\.lastPage[^.]|lastViewedPage|last_page_v" apps/web/src/ ; then
+            echo "::error::legacy / non-canonical last-page key found — must be exactly ta.nav.lastPage.v1"
+            exit 1
+          fi
+
+      - name: Setter is single source of writes (apps/web/src/navigation/setLastPage.ts)
+        run: |
+          set -e
+          test -f apps/web/src/navigation/setLastPage.ts || { echo "::error::missing apps/web/src/navigation/setLastPage.ts"; exit 1; }
+          BAD=$(grep -RnE "localStorage\.(setItem|removeItem).*ta\.nav\.lastPage" apps/web/src/ \
+                | grep -v 'apps/web/src/navigation/setLastPage\.ts' || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::localStorage writes to ta.nav.lastPage.v1 must go through setLastPage.ts"
+            echo "$BAD"
+            exit 1
+          fi
+
+      - name: Denylist module exists and is the single import source
+        run: |
+          set -e
+          test -f apps/web/src/navigation/lastPage.denylist.ts \
+            || { echo "::error::missing apps/web/src/navigation/lastPage.denylist.ts"; exit 1; }
+          if ! grep -RnE "from ['\"].*navigation/lastPage\.denylist['\"]" apps/web/src/navigation/setLastPage.ts ; then
+            echo "::error::setLastPage.ts must import deny-list from lastPage.denylist.ts"
+            exit 1
+          fi
+          INLINE=$(grep -RnE "(LAST_PAGE_DENY|lastPageDeny|lastPageBlocklist)" apps/web/src/ \
+                   | grep -v 'apps/web/src/navigation/lastPage\.denylist\.ts' \
+                   | grep -v 'apps/web/src/navigation/setLastPage\.ts' || true)
+          if [ -n "$INLINE" ]; then
+            echo "::error::deny-list must be defined only in lastPage.denylist.ts"
+            echo "$INLINE"
+            exit 1
+          fi
+
+      - name: Required deny-list patterns present
+        run: |
+          set -e
+          F=apps/web/src/navigation/lastPage.denylist.ts
+          for pat in '/login' '/logout' '/auth' '/oauth' '/reset' '/verify' '/checkout/confirm'; do
+            if ! grep -F "$pat" "$F" >/dev/null ; then
+              echo "::error::deny-list missing required pattern: $pat"; exit 1
+            fi
+          done
+
+      - name: No search-param logging (privacy)
+        run: |
+          set -e
+          BAD=$(grep -RnE "(track|log|telemetry|analytics|appInsights|trackEvent|trackPageView).*(location\.search|window\.location\.search|searchParams\.toString)" apps/web/src/ || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::telemetry must not log raw search params (privacy invariant)"
+            echo "$BAD"
+            exit 1
+          fi
+
+      - name: No cookies / no server-side storage for v1
+        run: |
+          set -e
+          BAD=$(grep -RnE "(document\.cookie|Set-Cookie|cookie:)" apps/web/src/navigation/ || true)
+          if [ -n "$BAD" ]; then
+            echo "::error::LP v1 is client-localStorage-only; cookies forbidden in navigation/"
+            echo "$BAD"
+            exit 1
+          fi
+          if grep -RnE "/api/nav/last" apps/web/src/ 2>/dev/null; then
+            echo "::error::LP v1 has no server contract; remove /api/nav/last* references"
+            exit 1
+          fi
+
+      - name: Semgrep config present
+        run: |
+          set -e
+          test -f .semgrep/last-page.yml || { echo "::error::missing .semgrep/last-page.yml (owned by LP-005)"; exit 1; }
+          grep -q 'lastpage-must-use-typed-setter' .semgrep/last-page.yml \
+            || { echo "::error::semgrep rule 'lastpage-must-use-typed-setter' missing from .semgrep/last-page.yml"; exit 1; }
+
+  build-and-test:
+    name: Build + test (node ${{ matrix.node }} / dotnet)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['20', '22']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: 'npm'
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install web deps
+        working-directory: apps/web
+        run: npm ci
+      - name: Lint web
+        working-directory: apps/web
+        run: npm run lint
+      - name: Type-check web
+        working-directory: apps/web
+        run: npm run typecheck
+      - name: Unit + property tests (LP scope)
+        working-directory: apps/web
+        run: npm test -- --reporter=verbose src/navigation
+      - name: Build web
+        working-directory: apps/web
+        run: npm run build
+
+      - uses: actions/setup-dotnet@v4
+        if: matrix.node == '22'
+        with:
+          dotnet-version: '8.0.x'
+      - name: dotnet build (verify no API surface drift)
+        if: matrix.node == '22'
+        run: dotnet build --nologo -c Release
+      - name: dotnet test (sanity — no LP tests expected on server)
+        if: matrix.node == '22'
+        run: dotnet test --nologo -c Release --no-build --filter 'Category!=E2E'
+
+  threat-model-approved:
+    name: Threat model approved (LP-005)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require `LP-005: APPROVED` marker
+        run: |
+          set -e
+          F=docs/last-viewed-page/threat-model.md
+          test -f "$F" || { echo "::error::missing $F"; exit 1; }
+          if ! grep -qE '^LP-005:[[:space:]]+APPROVED$' "$F" ; then
+            echo "::error::threat-model.md must contain a line exactly matching '^LP-005: APPROVED$'"
+            exit 1
+          fi
+
+  test-suite-green:
+    name: LP test suite (unit + property + Playwright E2E)
+    runs-on: ubuntu-latest
+    needs: [build-and-test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+          cache-dependency-path: apps/web/package-lock.json
+      - name: Install web deps
+        working-directory: apps/web
+        run: npm ci
+      - name: Run LP unit + property tests
+        working-directory: apps/web
+        run: npm test -- src/navigation
+      - name: Install Playwright browsers
+        working-directory: tests/e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Run LP E2E (smoke matrix)
+        working-directory: tests/e2e
+        env:
+          LP_E2E_BASE_URL: http://127.0.0.1:5173
+        run: npx playwright test last-viewed-page
+
+  gate:
+    name: last-page-gate aggregator
+    runs-on: ubuntu-latest
+    needs: [contract-invariants, build-and-test, threat-model-approved, test-suite-green]
+    steps:
+      - run: echo "✅ all LP-007 gate jobs passed — eligible for squash-merge"
