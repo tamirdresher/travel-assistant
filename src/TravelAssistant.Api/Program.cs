@@ -1,5 +1,6 @@
 using Serilog;
 using TravelAssistant.Api.Auth;
+using TravelAssistant.Api.Realtime;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -31,6 +32,13 @@ builder.Services.AddSingleton<IUserLookup>(_ => new InMemoryUserLookup(Array.Emp
 // peer IP is always used (correct for single-node dev).
 builder.Services.AddSingleton<IClientIpResolver, RfcForwardedClientIpResolver>();
 
+// APP-2 — SignalR ChatHub (DEFECT-1 fix: was previously missing AddSignalR,
+// DI for ITurnRegistry/IGroundingTracker/IGroundingGate, and MapHub).
+builder.Services.AddSignalR();
+builder.Services.AddSingleton<ITurnRegistry, TurnRegistry>();
+builder.Services.AddSingleton<IGroundingTracker, GroundingTracker>();
+builder.Services.AddSingleton<IGroundingGate, GroundingGate>();
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline
@@ -46,6 +54,9 @@ app.UseHttpsRedirection();
 
 // LOGIN-001 — POST /api/auth/login (activates login-gate.yml code-presence checks).
 app.MapLoginEndpoint();
+
+// APP-2 — wire ChatHub on /hubs/chat (DEFECT-1 fix).
+app.MapHub<ChatHub>("/hubs/chat");
 
 // Health check endpoint
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }))
