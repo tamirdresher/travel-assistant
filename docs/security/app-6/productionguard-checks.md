@@ -1,9 +1,23 @@
 # APP-6 PII Encryption — ProductionGuard Checks (Ready-to-Wire)
 
-**Status:** SPEC-LOCKED, COPY-PASTE-READY
+**Status:** SPEC-LOCKED, COPY-PASTE-READY · **v1.1** (QA defects DEFECT-1/2/3 fixed)
 **Owner:** security-hardening-squad
 **Depends on:** APP-6 PII Encryption spec v1.0 (`squads/security-hardening/artifacts/app-6-pii-encryption-spec.md`)
 **Consumer:** `src/TravelAssistant.ProductionGuard` (to be created by app-dev squad alongside `IPiiCipher` impl)
+
+---
+
+## GuardCheckResult Contract (read this first)
+
+The three checks below assume the existing `IProductionGuardCheck` contract exposes three factory methods on `GuardCheckResult`:
+
+| Factory | Gate workflow behavior | Use when |
+|---|---|---|
+| `Pass(id, msg)` | ✅ Green — gate allows promotion. | Check passed. |
+| `Fail(id, msg)` | ❌ Red — gate **blocks** promotion AND `IHostedService` runner aborts boot. | Configuration smell that breaks PII encryption. |
+| `Warn(id, msg)` | 🟡 Yellow — gate **allows** promotion + surfaces in PR summary + dashboard alert. Boot proceeds. | Soft degradation: CMK expiring soon, single optional dep missing, etc. |
+
+**Authority for `Warn`:** confirmed real by review-deployment-squad — the deployment-gate workflow treats `Warn` as pass-with-alert (logged to PR summary + Slack #ops-alerts, no merge block). If `GuardCheckResult.Warn` is NOT yet in the contract when app-dev wires this, app-dev MUST add it before wiring Check 2 — substituting `Pass` silently swallows the 7-day CMK rotation warning.
 
 ---
 
@@ -54,6 +68,10 @@ public sealed class PiiCipherRegisteredCheck : IProductionGuardCheck
 
 **Why:** The Customer-Managed Key wraps every per-tenant DEK. If `CmkName` is misspelled, missing, or the managed identity lacks `Key Vault Crypto User` role, every DEK unwrap fails on first request — not at boot. We pull the key once at startup to validate identity + RBAC + name spelling.
 
+**Timeout (DEFECT-2 fix):** the KV GET is hard-bounded by `_budget` (default 10s). Cold MSI token acquisition + cold KV endpoint can realistically take 1–2s; throttling or transient AAD stalls can hang indefinitely. We fail-fast at the budget rather than letting boot hang.
+
+**Testability (DEFECT-2 fix):** `KeyClient` is constructed via injected `Func<Uri, KeyClient>` factory so unit tests can substitute a fake. Default production factory is `(uri) => new KeyClient(uri, new DefaultAzureCredential())` — wired by `AddProductionGuardCheck<CmkNameResolvesCheck>()` when no override is registered.
+
 ```csharp
 using Azure.Identity;
 using Azure.Security.KeyVault.Keys;
@@ -65,6 +83,16 @@ public sealed class CmkNameResolvesCheck : IProductionGuardCheck
 {
     public string Id => "APP-6.2-cmk-name-resolves";
     public string Description => "KeyVault:CmkName must resolve to a real Key Vault key with crypto access.";
+
+    private readonly Func<Uri, KeyClient> _keyClientFactory;
+    private readonly TimeSpan _budget;
+
+    // Production ctor — DI calls this. Pass null to use defaults.
+    public CmkNameResolvesCheck(Func<Uri, KeyClient>? keyClientFactory = null, TimeSpan? budget = null)
+    {
+        _keyClientFactory = keyClientFactory ?? (uri => new KeyClient(uri, new DefaultAzureCredential()));
+        _budget = budget ?? TimeSpan.FromSeconds(10);
+    }
 
     public GuardCheckResult Run(IServiceProvider services)
     {
@@ -79,11 +107,15 @@ public sealed class CmkNameResolvesCheck : IProductionGuardCheck
         if (string.IsNullOrWhiteSpace(cmkName))
             return GuardCheckResult.Fail(Id, "KeyVault:CmkName is not configured.");
 
+        using var cts = new CancellationTokenSource(_budget);
         try
         {
-            var client = new KeyClient(new Uri(vaultUri), new DefaultAzureCredential());
+            var client = _keyClientFactory(new Uri(vaultUri));
             // GET key metadata — proves (a) URI reachable, (b) MI has Crypto User, (c) key exists, (d) name correct.
-            var keyResponse = client.GetKey(cmkName);
+            // Use async API with explicit CT so the budget actually applies; .GetAwaiter().GetResult() is acceptable
+            // inside a startup health check (we want boot to block on this).
+            var keyResponse = client.GetKeyAsync(cmkName, version: null, cancellationToken: cts.Token)
+                                    .GetAwaiter().GetResult();
             var key = keyResponse.Value;
 
             if (!key.Properties.Enabled.GetValueOrDefault(false))
@@ -93,6 +125,12 @@ public sealed class CmkNameResolvesCheck : IProductionGuardCheck
                 return GuardCheckResult.Warn(Id, $"CMK '{cmkName}' expires in <7d ({key.Properties.ExpiresOn:O}).");
 
             return GuardCheckResult.Pass(Id, $"CMK '{cmkName}' v{key.Properties.Version} resolved & enabled.");
+        }
+        catch (OperationCanceledException) when (cts.IsCancellationRequested)
+        {
+            return GuardCheckResult.Fail(Id,
+                $"Key Vault unreachable within {_budget.TotalSeconds:N0}s budget. " +
+                $"Check network egress, MI token acquisition, and KV endpoint health for {vaultUri}.");
         }
         catch (Azure.RequestFailedException ex) when (ex.Status == 403)
         {
@@ -116,12 +154,18 @@ public sealed class CmkNameResolvesCheck : IProductionGuardCheck
 
 ## Check 3 — No `[DataClass(Sensitive)]` property lacks an encrypting EF/Cosmos converter
 
-**Why:** This is the most important check. A new EF entity with `[DataClass(DataClassification.Sensitive)] public string Email` ships PII in plaintext unless the developer also calls `.HasConversion(new EncryptedPiiConverter(...))` in `OnModelCreating`. Reviewers miss this. The reflection scan walks every loaded assembly's `DbContext` types, finds every property marked `Sensitive`, and verifies the EF model registers an `EncryptedPiiConverter` (or equivalent) for it.
+**Why:** This is the most important check. A new EF entity with `[DataClass(DataClassification.Sensitive)] public string Email` ships PII in plaintext unless the developer also calls `.HasConversion(new EncryptedPiiConverter(...))` in `OnModelCreating`. Reviewers miss this. The reflection scan walks every registered `DbContext`, finds every property marked `Sensitive`, and verifies the EF model registers an `EncryptedPiiConverter` (or equivalent) for it.
+
+**DEFECT-1 fix — explicit context-type list, scoped resolution:**
+- The original draft used `services.GetServices<DbContext>()`. This returns an EMPTY enumerable in every real EF Core app, because `AddDbContext<AppDbContext>(...)` registers the **derived** type (`AppDbContext`), not the base `DbContext` service. The check silently passed and the entire `[DataClass(Sensitive)]` reflection guard was dead code.
+- Additionally, `DbContext` is registered as **scoped**. Resolving it from the root `IServiceProvider` throws under `ValidateScopes=true` (which is on in Development and SHOULD be on in Production).
+- **Fix:** the check takes a `Type[] contextTypes` constructor argument (the actual `AppDbContext` types the app uses), creates a scope on each `Run`, and resolves each context from the scoped provider. The wire-up site already knows which contexts to scan.
 
 ```csharp
 using System.Reflection;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
+using Microsoft.Extensions.DependencyInjection;
 using TravelAssistant.Security.Pii; // DataClassAttribute, DataClassification, EncryptedPiiConverter
 
 namespace TravelAssistant.ProductionGuard.Checks;
@@ -132,18 +176,46 @@ public sealed class SensitivePropertiesEncryptedCheck : IProductionGuardCheck
     public string Description =>
         "Every [DataClass(Sensitive)] property on a DbContext entity must have an EncryptedPiiConverter registered.";
 
+    private readonly Type[] _contextTypes;
+
+    /// <param name="contextTypes">
+    /// Concrete <see cref="DbContext"/>-derived types to scan, e.g. <c>typeof(AppDbContext)</c>.
+    /// MUST NOT be empty in production wiring — empty means the check is silently disabled.
+    /// </param>
+    public SensitivePropertiesEncryptedCheck(params Type[] contextTypes)
+    {
+        ArgumentNullException.ThrowIfNull(contextTypes);
+        if (contextTypes.Length == 0)
+            throw new ArgumentException(
+                "At least one DbContext type must be provided. Empty would silently disable the encryption guard.",
+                nameof(contextTypes));
+        foreach (var t in contextTypes)
+        {
+            if (!typeof(DbContext).IsAssignableFrom(t))
+                throw new ArgumentException($"Type '{t.FullName}' does not derive from DbContext.", nameof(contextTypes));
+        }
+        _contextTypes = contextTypes;
+    }
+
     public GuardCheckResult Run(IServiceProvider services)
     {
         ArgumentNullException.ThrowIfNull(services);
 
-        var contexts = services.GetServices<DbContext>().ToList();
-        if (contexts.Count == 0)
-            return GuardCheckResult.Pass(Id, "No DbContext registered — nothing to scan.");
+        // DbContext is scoped — MUST create a scope before resolving, or ValidateScopes=true throws.
+        using var scope = services.CreateScope();
+        var sp = scope.ServiceProvider;
 
         var violations = new List<string>();
+        var missingRegistrations = new List<string>();
 
-        foreach (var ctx in contexts)
+        foreach (var ctxType in _contextTypes)
         {
+            if (sp.GetService(ctxType) is not DbContext ctx)
+            {
+                missingRegistrations.Add(ctxType.FullName ?? ctxType.Name);
+                continue;
+            }
+
             foreach (var entityType in ctx.Model.GetEntityTypes())
             {
                 var clrType = entityType.ClrType;
@@ -156,7 +228,7 @@ public sealed class SensitivePropertiesEncryptedCheck : IProductionGuardCheck
                     var efProp = entityType.FindProperty(clrProp.Name);
                     if (efProp is null)
                     {
-                        // Property not mapped — log but don't fail (could be NotMapped intentionally).
+                        // Property not mapped — could be NotMapped intentionally. Skip.
                         continue;
                     }
 
@@ -169,6 +241,13 @@ public sealed class SensitivePropertiesEncryptedCheck : IProductionGuardCheck
                     }
                 }
             }
+        }
+
+        if (missingRegistrations.Count > 0)
+        {
+            return GuardCheckResult.Fail(Id,
+                $"DbContext type(s) declared but not registered in DI: {string.Join(", ", missingRegistrations)}. " +
+                $"Add services.AddDbContext<T>() for each, or remove from SensitivePropertiesEncryptedCheck wiring.");
         }
 
         if (violations.Count > 0)
@@ -198,8 +277,15 @@ In `Program.cs` after existing ProductionGuard checks:
 
 ```csharp
 builder.Services.AddProductionGuardCheck<PiiCipherRegisteredCheck>();
-builder.Services.AddProductionGuardCheck<CmkNameResolvesCheck>();
-builder.Services.AddProductionGuardCheck<SensitivePropertiesEncryptedCheck>();
+
+// Check 2 — defaults are production-correct; override factory/budget only in tests.
+builder.Services.AddProductionGuardCheck(_ => new CmkNameResolvesCheck());
+
+// Check 3 — explicit context-type list (REQUIRED). Add every DbContext the app uses.
+builder.Services.AddProductionGuardCheck(_ => new SensitivePropertiesEncryptedCheck(
+    typeof(AppDbContext)
+    // , typeof(AuditDbContext), typeof(ReportingDbContext), ...
+));
 ```
 
 Endpoint `/health/prod-guard` already returns the full `ProductionGuardReport` JSON for the gate workflow to parse failures (per prior decision).
@@ -215,20 +301,24 @@ Endpoint `/health/prod-guard` already returns the full `ProductionGuardReport` J
 | `KeyVault:CmkName` typo | Pass | **Fail (404)** | Pass |
 | MI missing `Key Vault Crypto User` | Pass | **Fail (403)** | Pass |
 | CMK disabled | Pass | **Fail (disabled)** | Pass |
+| Key Vault unreachable / throttled (DEFECT-2) | Pass | **Fail (timeout)** | Pass |
+| CMK expires in <7d | Pass | **Warn** (boot ok, gate surfaces) | Pass |
 | New entity adds `[DataClass(Sensitive)]` w/o converter | Pass | Pass | **Fail** |
 | New entity uses `[DataClass(Public)]` | Pass | Pass | Pass (not scanned) |
+| `contextTypes` arg empty (DEFECT-1) | Pass | Pass | **ArgumentException at wire-up** |
+| `contextTypes` lists unregistered DbContext type | Pass | Pass | **Fail (missing DI registration)** |
 
-Each scenario should be covered by a unit test in `tests/TravelAssistant.ProductionGuard.Tests/Checks/`. Mock `IServiceProvider` + an in-memory `DbContext` for Check 3.
+Each scenario should be covered by a unit test in `tests/TravelAssistant.ProductionGuard.Tests/Checks/`. For Check 2, substitute the `Func<Uri,KeyClient>` factory with a fake `KeyClient` (or use `Moq`-of-`KeyClient` if Azure SDK virtuals allow). For Check 3, use EF Core in-memory provider with two handcrafted entities — one with converter wired, one without.
 
 ---
 
 ## Performance
 
-- Check 1: O(1) — DI lookup.
-- Check 2: One Key Vault GET (~50–200ms cold, cached on subsequent boots within same instance).
-- Check 3: O(entities × properties). For a typical app (~50 entities × ~10 props), <5ms reflection walk on a warm JIT.
+- **Check 1:** O(1) DI lookup. <1ms.
+- **Check 2:** One Key Vault GET. Realistic cold path: **1–2s** (MSI token acquisition + first KV TLS handshake). Warm: ~50–150ms. Hard timeout: **10s** (configurable via ctor).
+- **Check 3:** O(contexts × entities × properties) + one scope creation per check run. For a typical app (~2 contexts × ~50 entities × ~10 props), <10ms reflection walk on warm JIT.
 
-Total boot overhead: <300ms. Acceptable for fail-fast.
+Total boot overhead: <**2.5s cold**, <**300ms warm**. Acceptable for fail-fast.
 
 ---
 
@@ -236,11 +326,23 @@ Total boot overhead: <300ms. Acceptable for fail-fast.
 
 If `/health/prod-guard` returns a `Fail` for any of these three checks, the deployment gate workflow (review-deployment-squad) blocks promotion to Production. The app process should also fail-fast at startup via the existing `IHostedService` ProductionGuard runner — do not let the listener bind on `:8080` with broken encryption.
 
+`Warn` results do NOT block — they surface on the PR summary + ops alert channel (see GuardCheckResult Contract section at top).
+
+---
+
+## Changelog
+
+- **v1.1** — Fixed QA-found defects:
+  - DEFECT-1 (CRITICAL): Check 3 `services.GetServices<DbContext>()` always returned empty in real apps. Replaced with explicit `Type[] contextTypes` ctor arg + scoped resolution.
+  - DEFECT-2 (MEDIUM): Check 2 had no timeout on `client.GetKey()` — KV stall would hang boot indefinitely. Added `TimeSpan budget` (default 10s) + `Func<Uri,KeyClient>` factory for testability.
+  - DEFECT-3 (CLARIFICATION): Documented `GuardCheckResult.Warn` semantics explicitly at top of doc. Confirmed by review-deployment that the gate treats Warn as pass-with-alert.
+- **v1.0** — Initial draft.
+
 ---
 
 ## Open Questions
 
-1. **CMK rotation grace period** — when `ExpiresOn < now+7d` we return `Warn`. Should we instead `Fail` to force pre-rotation, or `Pass + alert`? Defer to ops squad once rotation cadence is decided.
+1. **CMK rotation grace period** — when `ExpiresOn < now+7d` we return `Warn`. Should we instead `Fail` to force pre-rotation, or stay at `Pass + alert`? Defer to ops squad once rotation cadence is decided.
 2. **Cosmos converter discovery** — final shape of `EncryptedPiiJsonConverter` is not yet decided. Until APP-6 Cosmos work lands, Check 3 skips Cosmos entities silently with a single warn log.
 
 Both questions are non-blocking — the checks above ship as-is.
