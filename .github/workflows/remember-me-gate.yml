@@ -62,13 +62,14 @@ jobs:
             echo "::warning::No ta_rt cookie issuance found in src/TravelAssistant.Api/Auth. If app-dev hasn't shipped yet, this is fine; otherwise fix."
             exit 0
           fi
-          for f in $hits; do
-            for required in 'HttpOnly\s*=\s*true' 'Secure\s*=\s*(true|!\s*\w+\.IsDevelopment\(\))' 'SameSite\s*=\s*SameSiteMode\.Lax|SameSite\s*=\s*"Lax"' 'Path\s*=\s*"/api/auth"'; do
-              if ! grep -Eq "$required" "$f"; then
-                echo "::error file=$f::ta_rt cookie missing required attribute matching /$required/ (RM-005 D5-2)."
-                exit 1
-              fi
-            done
+          # Concatenate all referencing files; required attributes must appear at least once
+          # across the set (a constants file may name "ta_rt" while a separate handler sets the attrs).
+          blob=$(cat $hits)
+          for required in 'HttpOnly\s*=\s*true' 'Secure\s*=\s*(true|!\s*\w+\.IsDevelopment\(\))' 'SameSite\s*=\s*SameSiteMode\.Lax|SameSite\s*=\s*"Lax"' 'Path\s*=\s*"/api/auth"'; do
+            if ! echo "$blob" | grep -Eq "$required"; then
+              echo "::error::ta_rt cookie missing required attribute matching /$required/ across Auth/ (RM-005 D5-2). Files scanned: $hits"
+              exit 1
+            fi
           done
 
       # ---- ABSOLUTE-CAP ENFORCEMENT (90d = 7776000s) ----
