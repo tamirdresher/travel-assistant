@@ -3,7 +3,7 @@ rules:
   - id: no-refresh-token-in-localstorage
     message: "Refresh tokens MUST live in httpOnly Secure SameSite=Lax cookie only (D5-3). localStorage exposes to XSS."
     severity: ERROR
-    languages: [typescript, javascript, tsx, jsx]
+    languages: [typescript, javascript]
     paths:
       include: ["apps/web/**", "packages/**/auth/**", "src/**/auth/**"]
     patterns:
@@ -16,7 +16,7 @@ rules:
   - id: no-refresh-token-in-sessionstorage
     message: "Refresh tokens MUST NOT be in sessionStorage either (D5-3)."
     severity: ERROR
-    languages: [typescript, javascript, tsx, jsx]
+    languages: [typescript, javascript]
     paths:
       include: ["apps/web/**"]
     patterns:
@@ -29,7 +29,7 @@ rules:
   - id: rememberme-must-use-typed-setter
     message: "Write ta.auth.rememberMe only through setRememberMe() typed setter (§7 item 2)."
     severity: ERROR
-    languages: [typescript, javascript, tsx, jsx]
+    languages: [typescript, javascript]
     paths:
       include: ["apps/web/**"]
       exclude: ["apps/web/src/auth/setRememberMe.ts", "apps/web/src/auth/__tests__/**"]
