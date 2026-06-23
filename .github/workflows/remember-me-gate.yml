@@ -1,0 +1,136 @@
+name: remember-me-gate
+on:
+  pull_request:
+    branches: [main, feature/remember-me]
+    paths:
+      - 'apps/web/src/auth/**'
+      - 'src/TravelAssistant.Api/Auth/**'
+      - '.semgrep/remember-me-token-hygiene.yml'
+      - 'docs/security/remember-me-threat-model.md'
+      - '.github/workflows/remember-me-gate.yml'
+  push:
+    branches: [feature/remember-me]
+
+permissions:
+  contents: read
+
+jobs:
+  contract-invariants:
+    name: RM contract invariants (RM-005 §8)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # ---- NEGATIVE ASSERTIONS: tokens MUST NOT touch web storage ----
+      - name: assert no refresh/access token in localStorage
+        shell: bash
+        run: |
+          set -e
+          if grep -rEn "localStorage\.(setItem|getItem|removeItem)\([^)]*([Tt]oken|ta\.auth\.token|ta_rt)" \
+                apps/web/src 2>/dev/null; then
+            echo "::error::Refresh/access token written to localStorage. Tokens MUST be in HttpOnly cookie ta_rt (RM-005 D5-2)."
+            exit 1
+          fi
+
+      - name: assert no token in sessionStorage
+        shell: bash
+        run: |
+          set -e
+          if grep -rEn "sessionStorage\.(setItem|getItem|removeItem)\([^)]*([Tt]oken|ta_rt)" \
+                apps/web/src 2>/dev/null; then
+            echo "::error::Token in sessionStorage. Tokens MUST be in HttpOnly cookie ta_rt (RM-005 D5-2)."
+            exit 1
+          fi
+
+      - name: assert tokenStorage.ts removed (was RM-003 first cut)
+        shell: bash
+        run: |
+          set -e
+          if [ -f apps/web/src/auth/tokenStorage.ts ]; then
+            echo "::error::apps/web/src/auth/tokenStorage.ts exists. Refresh tokens are server-issued HttpOnly cookies — no client storage helper allowed (RM-005 D5-2)."
+            exit 1
+          fi
+
+      # ---- POSITIVE ASSERTIONS: cookie ta_rt configured correctly ----
+      - name: assert ta_rt cookie HttpOnly + Secure + SameSite=Lax + Path=/api/auth
+        shell: bash
+        run: |
+          set -e
+          # find any code path that issues the ta_rt cookie
+          hits=$(grep -rEln '"ta_rt"|ta_rt' src/TravelAssistant.Api/Auth 2>/dev/null || true)
+          if [ -z "$hits" ]; then
+            echo "::warning::No ta_rt cookie issuance found in src/TravelAssistant.Api/Auth. If app-dev hasn't shipped yet, this is fine; otherwise fix."
+            exit 0
+          fi
+          for f in $hits; do
+            for required in 'HttpOnly\s*=\s*true' 'Secure\s*=\s*true' 'SameSite\s*=\s*SameSiteMode\.Lax|SameSite\s*=\s*"Lax"' 'Path\s*=\s*"/api/auth"'; do
+              if ! grep -Eq "$required" "$f"; then
+                echo "::error file=$f::ta_rt cookie missing required attribute matching /$required/ (RM-005 D5-2)."
+                exit 1
+              fi
+            done
+          done
+
+      # ---- ABSOLUTE-CAP ENFORCEMENT (90d = 7776000s) ----
+      - name: assert AbsoluteCap = 7776000s enforced on refresh
+        shell: bash
+        run: |
+          set -e
+          if [ ! -d src/TravelAssistant.Api/Auth ]; then
+            echo "::warning::Auth folder absent — skipping AbsoluteCap check."
+            exit 0
+          fi
+          if ! grep -rEq '7776000|TimeSpan\.FromDays\(90\)|AbsoluteExp' src/TravelAssistant.Api/Auth; then
+            echo "::error::AbsoluteCap (90d / 7776000s / TimeSpan.FromDays(90)) not enforced on refresh (RM-005 D5-1)."
+            exit 1
+          fi
+
+      # ---- FAMILYID REPLAY DETECTION ----
+      - name: assert FamilyId + RotatedToId reuse detection
+        shell: bash
+        run: |
+          set -e
+          if [ ! -d src/TravelAssistant.Api/Auth ]; then exit 0; fi
+          if ! grep -rEq 'FamilyId' src/TravelAssistant.Api/Auth; then
+            echo "::error::FamilyId column missing — reuse-detection requires per-family grouping (RM-005 §6, D5-4)."
+            exit 1
+          fi
+          if ! grep -rEq 'RotatedToId|RevokeFamily|revokeFamily' src/TravelAssistant.Api/Auth; then
+            echo "::error::RotatedToId/RevokeFamily missing — reused refresh token must revoke entire family (RM-005 D5-4)."
+            exit 1
+          fi
+
+      # ---- CSRF HEADER GATE ----
+      - name: assert X-TA-Refresh header required on /refresh and /logout
+        shell: bash
+        run: |
+          set -e
+          if [ ! -d src/TravelAssistant.Api/Auth ]; then exit 0; fi
+          if ! grep -rEq 'X-TA-Refresh' src/TravelAssistant.Api/Auth; then
+            echo "::error::Custom CSRF header X-TA-Refresh not enforced on /api/auth/refresh and /api/auth/logout (RM-005 D5-5)."
+            exit 1
+          fi
+
+      # ---- PREFERENCE STORAGE (typed setter only) ----
+      - name: assert ta.auth.rememberMe written only via setRememberMe.ts
+        shell: bash
+        run: |
+          set -e
+          violations=$(grep -rEln "localStorage\.setItem\(\s*['\"]ta\.auth\.rememberMe['\"]" apps/web/src 2>/dev/null \
+            | grep -v "apps/web/src/auth/setRememberMe.ts" \
+            | grep -v "apps/web/src/auth/rememberMeStorage.ts" || true)
+          if [ -n "$violations" ]; then
+            echo "::error::Raw localStorage.setItem('ta.auth.rememberMe', …) outside typed setter:"
+            echo "$violations"
+            exit 1
+          fi
+
+  semgrep:
+    name: semgrep — remember-me-token-hygiene
+    runs-on: ubuntu-latest
+    container:
+      image: returntocorp/semgrep:latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: run semgrep
+        run: semgrep --error --severity ERROR --config .semgrep/remember-me-token-hygiene.yml .
