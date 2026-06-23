@@ -1,4 +1,5 @@
 using Serilog;
+using TravelAssistant.Api.Auth;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -17,6 +18,15 @@ builder.Services.AddOpenApi();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+// LOGIN-001 — auth services. Two-layer RL is IMemoryCache-backed in dev;
+// per §5 the prod swap MUST be a distributed cache.
+builder.Services.AddMemoryCache();
+builder.Services.AddSingleton<IPasswordHasher, Argon2idPasswordHasher>();
+builder.Services.AddSingleton<ILoginRateLimiter, LoginRateLimiter>();
+builder.Services.AddSingleton<ILoginAuditLog, LoginAuditLog>();
+builder.Services.AddSingleton<IAccessTokenIssuer, RsaAccessTokenIssuer>();
+builder.Services.AddSingleton<IUserLookup>(_ => new InMemoryUserLookup(Array.Empty<UserRecord>()));
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline
@@ -29,6 +39,9 @@ if (app.Environment.IsDevelopment())
 
 app.UseSerilogRequestLogging();
 app.UseHttpsRedirection();
+
+// LOGIN-001 — POST /api/auth/login (activates login-gate.yml code-presence checks).
+app.MapLoginEndpoint();
 
 // Health check endpoint
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }))
@@ -64,3 +77,6 @@ record SearchResponse
     public required string RequestId { get; init; }
     public required DateTime Timestamp { get; init; }
 }
+
+// Expose Program for WebApplicationFactory<Program> in test assemblies.
+public partial class Program { }
