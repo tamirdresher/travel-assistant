@@ -1,0 +1,37 @@
+# SEC-1 — gitleaks config. CI must fail on any finding.
+# Tuned to keep noise low while catching real leaks for a .NET + Aspire repo.
+
+title = "travel-assistant gitleaks"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "azure-storage-account-key"
+description = "Azure Storage account access key"
+regex = '''[A-Za-z0-9+/]{86}==(?:[^A-Za-z0-9+/=]|$)'''
+keywords = ["AccountKey", "DefaultEndpointsProtocol"]
+
+[[rules]]
+id = "azure-openai-key"
+description = "Azure OpenAI / Cognitive Services key (32-hex)"
+regex = '''(?i)(azure[-_]?openai|cognitiveservices|api[-_]?key)["'=:\s]+[a-f0-9]{32}'''
+keywords = ["azure", "openai", "cognitiveservices"]
+
+[[rules]]
+id = "dotnet-connection-string"
+description = "Inline SQL/Cosmos connection string"
+regex = '''(?i)(server|data source|accountendpoint)=[^;\s]+;.*(password|accountkey|pwd)=[^;\s]+'''
+keywords = ["server=", "data source=", "accountendpoint="]
+
+[allowlist]
+description = "Test fixtures + docs deliberately containing fake values"
+paths = [
+    '''tests/.*Fixtures.*''',
+    '''docs/security/.*\.md''',
+    '''.gitleaks\.toml''',
+]
+regexes = [
+    '''AKIAIOSFODNN7EXAMPLE''',
+    '''00000000-0000-0000-0000-000000000000''',
+]
