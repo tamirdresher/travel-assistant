@@ -1,0 +1,77 @@
+# XD-6c fixture matrix — QA placeholder copy.
+# AUTHORITATIVE source: tests/a11y/fixture-matrix.yaml on origin/xd/design-baseline.
+# This copy exists so the axe runner can be developed against stubs in parallel.
+# Replace verbatim when XD's branch merges to main. Do NOT diverge schema.
+#
+# Schema: docs/design/fixtures/axe-fixture-contract.md §7 (XD-owned).
+schema_version: 1
+generated_by: quality-testing-squad
+note: placeholder-pending-xd-merge
+
+# 10 canonical state values (mirrors 7-event SignalR vocab + modal-deferred + retry-in-flight).
+# Per XD: no new states without an XD ADR.
+states:
+  - idle
+  - streaming
+  - pending-patch
+  - applied-patch
+  - turn-end
+  - turn-cancelled
+  - turn-error
+  - retry-in-flight
+  - modal-deferred
+  - empty
+
+# 10 components × variable states = 53 axe runs (XD spec).
+# Each entry: component name + states it must render.
+# Placeholder counts mirror XD's claim (3 for MudCard, 8 for app-shell).
+# Will be replaced verbatim by XD's matrix on merge.
+components:
+  - name: app-shell
+    states: [idle, streaming, pending-patch, applied-patch, turn-end, turn-cancelled, turn-error, modal-deferred]
+  - name: chat-thread
+    states: [idle, streaming, pending-patch, applied-patch, turn-end, turn-cancelled, turn-error, retry-in-flight]
+  - name: chat-composer
+    states: [idle, streaming, turn-end, turn-cancelled, turn-error, retry-in-flight]
+  - name: itinerary-card
+    states: [idle, pending-patch, applied-patch, turn-cancelled]
+  - name: turn-status-banner
+    states: [streaming, turn-end, turn-cancelled, turn-error, retry-in-flight]
+  - name: patch-diff-block
+    states: [pending-patch, applied-patch, turn-cancelled]
+  - name: source-citations
+    states: [idle, applied-patch, turn-end]
+  - name: error-toast
+    states: [turn-error, modal-deferred]
+  - name: empty-state
+    states: [empty, idle]
+  - name: mud-card
+    states: [idle, pending-patch, applied-patch]
+
+# Per-state assertion rules layered on top of base axe.
+# See axe-fixture-contract.md §4 for full table. QA enforces these in runner.
+state_rules:
+  streaming:
+    aria_live: polite
+    aria_busy: "true"
+    forbid_aria_live: assertive
+  pending-patch:
+    require_text_or_glyph_marker: true
+    min_contrast_tokens: ["state.pending.fg/state.pending.bg=4.5:1"]
+  turn-error:
+    first_focusable_after_banner: "retry"
+  turn-cancelled:
+    focus_returns_to: chat-composer
+  modal-deferred:
+    forbid_in_dom: ["[role=dialog][aria-modal=true]", ".mud-overlay"]
+    queued_indicator_aria_live: polite
+  retry-in-flight:
+    aria_busy: "true"
+
+# CI gate: per-PR blocking. Matches XD-3 merge-blocking AA requirement.
+ci:
+  blocking: true
+  axe_tags: [wcag2a, wcag2aa, wcag22aa, best-practice]
+  fixture_ready_attribute: "data-fixture-ready"
+  fixture_ready_timeout_seconds: 60
+  seed: 42
