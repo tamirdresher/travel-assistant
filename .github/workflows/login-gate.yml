@@ -120,6 +120,17 @@ jobs:
           grep -rqE 'login:account:|account[-_]?partition' src/**/Auth/ \
             || { echo "::error::Per-account RL partition not found (threat-model §5)"; exit 1; }
 
+      - name: Invariant 6-IP — clientIp resolved via RFC 7239 Forwarded (not raw RemoteIpAddress)
+        if: steps.detect.outputs.shipped == 'true'
+        run: |
+          # Threat-model §6 + login-api §6 require clientIp from validated proxy chain.
+          # Direct Connection.RemoteIpAddress collapses per-IP RL behind any proxy.
+          # Allowed inside an IClientIpResolver implementation as a fallback; not at the call site.
+          if grep -rnE 'ctx\.Connection\.RemoteIpAddress|context\.Connection\.RemoteIpAddress|HttpContext\.Connection\.RemoteIpAddress' src/**/Auth/LoginEndpoint.cs 2>/dev/null; then
+            echo "::error::LoginEndpoint reads RemoteIpAddress directly — must resolve via IClientIpResolver honoring RFC 7239 Forwarded (threat-model §6, LOGIN-002)"
+            exit 1
+          fi
+
   semgrep:
     name: Semgrep login-hygiene
     runs-on: ubuntu-latest
