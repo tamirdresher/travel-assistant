@@ -49,9 +49,30 @@ public sealed class PiiRedactorGoldenTests
         }
     }
 
+    public static IEnumerable<object[]> AdversarialCases()
+        => AllCases().Where(o => !string.Equals(((GoldenCase)o[0]).Category, "benign", StringComparison.OrdinalIgnoreCase));
+
+    public static IEnumerable<object[]> BenignCases()
+        => AllCases().Where(o => string.Equals(((GoldenCase)o[0]).Category, "benign", StringComparison.OrdinalIgnoreCase));
+
+    // Test method names are the SEC-1b CI gate classifier
+    // (review-deployment/artifacts/sec-1b-pii-gate). Regex: benign|fp|false.?positive.
+    // Do not rename without coordinating with review-deployment-squad.
+
     [Theory]
-    [MemberData(nameof(AllCases))]
-    public void Golden(GoldenCase c)
+    [MemberData(nameof(AdversarialCases))]
+    public void Golden_Adversarial(GoldenCase c)
+    {
+        ArgumentNullException.ThrowIfNull(c);
+        var result = PiiRedactor.Redact(c.Input);
+
+        Assert.Equal(c.ExpectedRedacted, result.Redacted);
+        Assert.Equal(c.ExpectedMatches, result.Matches.Count);
+    }
+
+    [Theory]
+    [MemberData(nameof(BenignCases))]
+    public void Golden_Benign_FalsePositiveGuard(GoldenCase c)
     {
         ArgumentNullException.ThrowIfNull(c);
         var result = PiiRedactor.Redact(c.Input);
