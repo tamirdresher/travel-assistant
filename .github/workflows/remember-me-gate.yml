@@ -56,8 +56,8 @@ jobs:
         shell: bash
         run: |
           set -e
-          # find any code path that issues the ta_rt cookie
-          hits=$(grep -rEln '"ta_rt"|ta_rt' src/TravelAssistant.Api/Auth 2>/dev/null || true)
+          # find any code path that issues the ta_rt cookie (literal name or via RefreshCookie.Name constant)
+          hits=$(grep -rEln '"ta_rt"|RefreshCookie\.Name' src/TravelAssistant.Api/Auth 2>/dev/null || true)
           if [ -z "$hits" ]; then
             echo "::warning::No ta_rt cookie issuance found in src/TravelAssistant.Api/Auth. If app-dev hasn't shipped yet, this is fine; otherwise fix."
             exit 0
