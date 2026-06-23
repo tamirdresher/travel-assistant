@@ -1,0 +1,165 @@
+# SEC-1b PII Redactor goldens — 20 cases.
+# Schema:
+#   id, category (or "benign"), input, expected_redacted, expected_matches (count), notes
+# Numbers used:
+#   - Visa 4532015112830366 (valid Luhn, BIN block reserved for testing patterns)
+#   - Mastercard 5425 2334 3010 9903 (valid Luhn test PAN)
+#   - Amex 374245455400126 (valid Luhn test PAN)
+#   - IBAN GB82WEST12345698765432 (valid mod-97, UK test IBAN from ISO 13616)
+#   - Phone +44 20 7946 0958 (UK Ofcom drama-reserved)
+#   - JWT header.payload.sig synthetic, eyJ prefix
+# All values are non-routable fixtures and must not match real customer data.
+
+cases:
+
+  # -------- email (3) --------
+  - id: e-1
+    category: email
+    input: "Contact me at alice.doe@example.com please."
+    expected_redacted: "Contact me at [REDACTED:EMAIL] please."
+    expected_matches: 1
+    notes: "Basic local@domain."
+
+  - id: e-2
+    category: email
+    input: "send to alice+filter@mail.example.co.uk for triage"
+    expected_redacted: "send to [REDACTED:EMAIL] for triage"
+    expected_matches: 1
+    notes: "Plus-addressing + two-label TLD."
+
+  - id: e-3
+    category: email
+    input: "<alice@sub.example.io>; <bob@example.io>"
+    expected_redacted: "<[REDACTED:EMAIL]>; <[REDACTED:EMAIL]>"
+    expected_matches: 2
+    notes: "Two emails in angle brackets, subdomain on first."
+
+  # -------- phone (2) --------
+  - id: p-1
+    category: phone
+    input: "Call +44 20 7946 0958 between 9 and 5"
+    expected_redacted: "Call [REDACTED:PHONE] between 9 and 5"
+    expected_matches: 1
+    notes: "International, spaced groups."
+
+  - id: p-2
+    category: phone
+    input: "ring (020) 7946-0958 or skip"
+    expected_redacted: "ring [REDACTED:PHONE] or skip"
+    expected_matches: 1
+    notes: "Parenthesized area code, dash separator."
+
+  # -------- credit card (3) --------
+  - id: c-1
+    category: credit_card
+    input: "card on file 4532015112830366 charged"
+    expected_redacted: "card on file [REDACTED:CREDITCARD] charged"
+    expected_matches: 1
+    notes: "Visa, no separators."
+
+  - id: c-2
+    category: credit_card
+    input: "use 5425 2334 3010 9903 for the booking"
+    expected_redacted: "use [REDACTED:CREDITCARD] for the booking"
+    expected_matches: 1
+    notes: "Mastercard, spaced groups."
+
+  - id: c-3
+    category: credit_card
+    input: "amex 3742-454554-00126 stored"
+    expected_redacted: "amex [REDACTED:CREDITCARD] stored"
+    expected_matches: 1
+    notes: "Amex, 15-digit, dashed."
+
+  # -------- ssn (2) --------
+  - id: s-1
+    category: ssn
+    input: "SSN: 123-45-6789 on file"
+    expected_redacted: "SSN: [REDACTED:SSN] on file"
+    expected_matches: 1
+    notes: "Canonical US SSN form."
+
+  - id: s-2
+    category: ssn
+    input: "employee 555-12-3456 confirmed"
+    expected_redacted: "employee [REDACTED:SSN] confirmed"
+    expected_matches: 1
+    notes: "Mid-range area number."
+
+  # -------- ip (2) --------
+  - id: i-1
+    category: ip_address
+    input: "client 192.168.1.42 connected"
+    expected_redacted: "client [REDACTED:IPADDRESS] connected"
+    expected_matches: 1
+    notes: "IPv4 RFC1918."
+
+  - id: i-2
+    category: ip_address
+    input: "peer 2001:0db8:85a3:0000:0000:8a2e:0370:7334 reached"
+    expected_redacted: "peer [REDACTED:IPADDRESS] reached"
+    expected_matches: 1
+    notes: "IPv6 documentation prefix."
+
+  # -------- passport (1) --------
+  - id: pa-1
+    category: passport
+    input: "passport AB1234567 stored"
+    expected_redacted: "passport [REDACTED:PASSPORT] stored"
+    expected_matches: 1
+    notes: "Mixed alpha+digit, 9 chars."
+
+  # -------- iban (1) --------
+  - id: ib-1
+    category: iban
+    input: "wire to GB82WEST12345698765432 by EOD"
+    expected_redacted: "wire to [REDACTED:IBAN] by EOD"
+    expected_matches: 1
+    notes: "UK test IBAN (ISO 13616), valid mod-97."
+
+  # -------- jwt / api key (2) --------
+  - id: t-1
+    category: jwt_or_api_key
+    input: "Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc-DEF_123"
+    expected_redacted: "Authorization: Bearer [REDACTED:JWTORAPIKEY]"
+    expected_matches: 1
+    notes: "JWT with eyJ header — token redacted, scheme word preserved."
+
+  - id: t-2
+    category: jwt_or_api_key
+    input: "api_key=fixture_TEST_abcdef0123456789ABCDEF0123 in config"
+    expected_redacted: "api_key=[REDACTED:JWTORAPIKEY] in config"
+    expected_matches: 1
+    notes: "Cued key-value pair; cue word preserved, value redacted. Synthetic fixture (no provider prefix) to avoid secret-scanning FP."
+
+  # -------- benign passthroughs (4) --------
+  # These MUST NOT be redacted. Failures here mean false-positives, which break
+  # log readability and conversation context.
+
+  - id: b-1
+    category: benign
+    input: "Aspire 9.0.16 supports OTLP; see CHANGELOG v9.0.16."
+    expected_redacted: "Aspire 9.0.16 supports OTLP; see CHANGELOG v9.0.16."
+    expected_matches: 0
+    notes: "Version numbers must not match phone or IP."
+
+  - id: b-2
+    category: benign
+    input: "Order #1234567890123456 has not been paid yet."
+    expected_redacted: "Order #1234567890123456 has not been paid yet."
+    expected_matches: 0
+    notes: "16-digit order number fails Luhn — not a credit card."
+
+  - id: b-3
+    category: benign
+    input: "the IPv4 999.999.999.999 was rejected upstream"
+    expected_redacted: "the IPv4 999.999.999.999 was rejected upstream"
+    expected_matches: 0
+    notes: "Octets out of 0-255 range fail structural check."
+
+  - id: b-4
+    category: benign
+    input: "the docs say USA-001 is the build tag"
+    expected_redacted: "the docs say USA-001 is the build tag"
+    expected_matches: 0
+    notes: "Short alpha+digit token under passport length floor."
