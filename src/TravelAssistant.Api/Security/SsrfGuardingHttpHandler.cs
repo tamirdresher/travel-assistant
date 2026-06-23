@@ -53,6 +53,7 @@ public sealed class SsrfGuardingHttpHandler : DelegatingHandler
         HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(request);
         var uri = request.RequestUri
             ?? throw new InvalidOperationException("SSRF guard: request URI is null.");
 
