@@ -48,6 +48,10 @@ public sealed record LoginAuditEntry
     public required string EmailHash { get; init; }
     public string? UserId { get; init; }
     public string? ClientIp { get; init; }
+    // LOGIN-002 — true when the resolver believes ClientIp identifies the actual
+    // caller (peer is client, or every consumed proxy hop was in Auth:TrustedProxyCidrs).
+    // false on partial-trust chains or malformed forwarding headers.
+    public bool IpTrusted { get; init; }
     public string? UserAgent { get; init; }
     public required string Outcome { get; init; }
     public bool RememberMe { get; init; }

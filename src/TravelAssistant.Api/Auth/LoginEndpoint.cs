@@ -60,6 +60,7 @@ public static class LoginEndpoint
         IAccessTokenIssuer issuer,
         IWebHostEnvironment env,
         IConfiguration config,
+        IClientIpResolver ipResolver,
         ILogger<Argon2idPasswordHasher> log,
         CancellationToken ct)
     {
@@ -115,7 +116,12 @@ public static class LoginEndpoint
         if (body.Password.Length > 1024)
             return Problem(StatusCodes.Status400BadRequest, "invalid_request", "password too long.", correlationId);
 
-        var clientIp = ctx.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+        // LOGIN-002 — resolve client IP through RFC 7239 Forwarded (or XFF
+        // fallback) when the immediate peer is in Auth:TrustedProxyCidrs. Empty
+        // list (default) makes this equivalent to the peer address. The handler
+        // MUST NOT read the raw peer address directly — login-gate Invariant 6-IP
+        // forbids that pattern in this file.
+        var (clientIp, ipTrusted) = ipResolver.Resolve(ctx);
         var ua = TruncateUserAgent(ctx.Request.Headers.UserAgent.ToString());
         var emailHash = LoginHashing.EmailHash(body.Email);
 
@@ -123,7 +129,7 @@ public static class LoginEndpoint
         var ipCheck = rl.CheckIp(clientIp);
         if (ipCheck.Outcome == LoginRateOutcome.RateLimitedIp)
         {
-            audit.Write(NewEntry(correlationId, emailHash, null, clientIp, ua, LoginOutcomes.RateLimitedIp, body.RememberMe));
+            audit.Write(NewEntry(correlationId, emailHash, null, clientIp, ua, LoginOutcomes.RateLimitedIp, body.RememberMe, ipTrusted: ipTrusted));
             // §I9 — X-RateLimit-* is allowed ONLY on 429 (never on 401, which
             // would be an enumeration aid).
             return RateLimited(ctx, correlationId, ipCheck.RetryAfter);
@@ -137,7 +143,7 @@ public static class LoginEndpoint
             var outcome = acctCheck.Outcome == LoginRateOutcome.Locked
                 ? LoginOutcomes.AccountLocked
                 : LoginOutcomes.RateLimitedAccount;
-            audit.Write(NewEntry(correlationId, emailHash, null, clientIp, ua, outcome, body.RememberMe));
+            audit.Write(NewEntry(correlationId, emailHash, null, clientIp, ua, outcome, body.RememberMe, ipTrusted: ipTrusted));
             return InvalidCredentials(ctx, correlationId);
         }
 
@@ -150,7 +156,7 @@ public static class LoginEndpoint
                 // indistinguishable from a real verify.
                 _ = await hasher.VerifyDummyAsync(body.Password, ct).ConfigureAwait(false);
                 rl.RecordAccountFailure(emailHash);
-                audit.Write(NewEntry(correlationId, emailHash, null, clientIp, ua, LoginOutcomes.UnknownUser, body.RememberMe));
+                audit.Write(NewEntry(correlationId, emailHash, null, clientIp, ua, LoginOutcomes.UnknownUser, body.RememberMe, ipTrusted: ipTrusted));
                 return InvalidCredentials(ctx, correlationId);
             }
 
@@ -158,19 +164,19 @@ public static class LoginEndpoint
             if (!verified)
             {
                 rl.RecordAccountFailure(emailHash);
-                audit.Write(NewEntry(correlationId, emailHash, user.Id, clientIp, ua, LoginOutcomes.InvalidCredentials, body.RememberMe));
+                audit.Write(NewEntry(correlationId, emailHash, user.Id, clientIp, ua, LoginOutcomes.InvalidCredentials, body.RememberMe, ipTrusted: ipTrusted));
                 return InvalidCredentials(ctx, correlationId);
             }
 
             // §I5 — EmailUnverified / Disabled also collapse to invalid_credentials wire.
             if (!user.EmailVerified)
             {
-                audit.Write(NewEntry(correlationId, emailHash, user.Id, clientIp, ua, LoginOutcomes.EmailUnverified, body.RememberMe));
+                audit.Write(NewEntry(correlationId, emailHash, user.Id, clientIp, ua, LoginOutcomes.EmailUnverified, body.RememberMe, ipTrusted: ipTrusted));
                 return InvalidCredentials(ctx, correlationId);
             }
             if (user.Disabled)
             {
-                audit.Write(NewEntry(correlationId, emailHash, user.Id, clientIp, ua, LoginOutcomes.DisabledAccount, body.RememberMe));
+                audit.Write(NewEntry(correlationId, emailHash, user.Id, clientIp, ua, LoginOutcomes.DisabledAccount, body.RememberMe, ipTrusted: ipTrusted));
                 return InvalidCredentials(ctx, correlationId);
             }
 
@@ -183,7 +189,7 @@ public static class LoginEndpoint
             RefreshCookie.AppendRefreshCookie(ctx, env, refreshToken, ttl);
 
             var access = issuer.Issue(user.Id, user.Email);
-            audit.Write(NewEntry(correlationId, emailHash, user.Id, clientIp, ua, LoginOutcomes.Success, body.RememberMe, familyId));
+            audit.Write(NewEntry(correlationId, emailHash, user.Id, clientIp, ua, LoginOutcomes.Success, body.RememberMe, familyId, ipTrusted: ipTrusted));
 
             return Results.Json(
                 new LoginAuthenticatedResponse(
@@ -195,7 +201,7 @@ public static class LoginEndpoint
         }
         catch (Argon2OverflowException)
         {
-            audit.Write(NewEntry(correlationId, emailHash, user?.Id, clientIp, ua, LoginOutcomes.Argon2Overflow503, body.RememberMe));
+            audit.Write(NewEntry(correlationId, emailHash, user?.Id, clientIp, ua, LoginOutcomes.Argon2Overflow503, body.RememberMe, ipTrusted: ipTrusted));
             return Problem(StatusCodes.Status503ServiceUnavailable, "argon2_overflow", "Login capacity temporarily exhausted.", correlationId, retryAfterSeconds: 1);
         }
     }
@@ -273,7 +279,7 @@ public static class LoginEndpoint
 
     private static LoginAuditEntry NewEntry(
         string correlationId, string emailHash, string? userId, string clientIp,
-        string ua, string outcome, bool rememberMe, Guid? familyId = null)
+        string ua, string outcome, bool rememberMe, Guid? familyId = null, bool ipTrusted = true)
         => new LoginAuditEntry
         {
             TimestampUtc = DateTimeOffset.UtcNow,
@@ -281,6 +287,7 @@ public static class LoginEndpoint
             EmailHash = emailHash,
             UserId = userId,
             ClientIp = clientIp,
+            IpTrusted = ipTrusted,
             UserAgent = ua,
             Outcome = outcome,
             RememberMe = rememberMe,

@@ -26,6 +26,10 @@ builder.Services.AddSingleton<ILoginRateLimiter, LoginRateLimiter>();
 builder.Services.AddSingleton<ILoginAuditLog, LoginAuditLog>();
 builder.Services.AddSingleton<IAccessTokenIssuer, RsaAccessTokenIssuer>();
 builder.Services.AddSingleton<IUserLookup>(_ => new InMemoryUserLookup(Array.Empty<UserRecord>()));
+// LOGIN-002 — RFC 7239 Forwarded-aware client IP resolver. Reads
+// `Auth:TrustedProxyCidrs` from configuration; empty list (default) means
+// peer IP is always used (correct for single-node dev).
+builder.Services.AddSingleton<IClientIpResolver, RfcForwardedClientIpResolver>();
 
 var app = builder.Build();
 
