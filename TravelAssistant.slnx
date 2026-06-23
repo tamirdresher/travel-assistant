@@ -1,5 +1,10 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/TravelAssistant.Api/TravelAssistant.Api.csproj" />
+    <Project Path="src/TravelAssistant.Agent.Abstractions/TravelAssistant.Agent.Abstractions.csproj" />
+    <Project Path="src/TravelAssistant.Security.Pii/TravelAssistant.Security.Pii.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/TravelAssistant.Security.Pii.Tests/TravelAssistant.Security.Pii.Tests.csproj" />
   </Folder>
 </Solution>
