@@ -1,0 +1,54 @@
+# Remember-Me token hygiene (RM-005) - enforces D5-3 (cookie-only refresh) and §7
+rules:
+  - id: no-refresh-token-in-localstorage
+    message: "Refresh tokens MUST live in httpOnly Secure SameSite=Lax cookie only (D5-3). localStorage exposes to XSS."
+    severity: ERROR
+    languages: [typescript, javascript]
+    paths:
+      include: ["apps/web/**", "packages/**/auth/**", "src/**/auth/**"]
+    patterns:
+      - pattern-either:
+          - pattern: localStorage.setItem("$KEY", $VAL)
+          - pattern: window.localStorage.setItem("$KEY", $VAL)
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: "(?i).*(token|refresh|jwt|bearer|access).*"
+  - id: no-refresh-token-in-sessionstorage
+    message: "Refresh tokens MUST NOT be in sessionStorage either (D5-3)."
+    severity: ERROR
+    languages: [typescript, javascript]
+    paths:
+      include: ["apps/web/**"]
+    patterns:
+      - pattern-either:
+          - pattern: sessionStorage.setItem("$KEY", $VAL)
+          - pattern: window.sessionStorage.setItem("$KEY", $VAL)
+      - metavariable-regex:
+          metavariable: $KEY
+          regex: "(?i).*(token|refresh|jwt|bearer|access).*"
+  - id: rememberme-must-use-typed-setter
+    message: "Write ta.auth.rememberMe only through setRememberMe() typed setter (§7 item 2)."
+    severity: ERROR
+    languages: [typescript, javascript]
+    paths:
+      include: ["apps/web/**"]
+      exclude: ["apps/web/src/auth/setRememberMe.ts", "apps/web/src/auth/__tests__/**"]
+    pattern: localStorage.setItem("ta.auth.rememberMe", $V)
+  - id: refresh-cookie-must-be-httponly-secure
+    message: "Set-Cookie ta_rt must include HttpOnly, Secure, SameSite=Lax, Path=/api/auth (D5-3, D5-7)."
+    severity: ERROR
+    languages: [csharp]
+    paths:
+      include: ["src/TravelAssistant.Api/**", "src/**/Auth/**"]
+    patterns:
+      - pattern: $RESP.Cookies.Append("ta_rt", ...)
+      - pattern-not: $RESP.Cookies.Append("ta_rt", $V, new CookieOptions { ..., HttpOnly = true, Secure = true, SameSite = SameSiteMode.Lax, Path = "/api/auth", ... })
+  - id: no-rememberme-trust-from-request-on-refresh
+    message: "On /refresh, RememberMe MUST be read from the DB row, not the request body (§8 item 3)."
+    severity: ERROR
+    languages: [csharp]
+    paths:
+      include: ["src/TravelAssistant.Api/**/Refresh*", "src/**/Auth/Refresh*"]
+    pattern-either:
+      - pattern: $REQ.RememberMe
+      - pattern: request.RememberMe
