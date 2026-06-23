@@ -7,6 +7,7 @@ public sealed class StubTravelAgent : ITravelAgent
 {
     public Task<TripPlan> PlanTripAsync(TripRequest request, CancellationToken ct = default)
     {
+        ArgumentNullException.ThrowIfNull(request);
         var days = new List<TripDay>();
         for (var i = 1; i <= request.Days; i++)
         {
@@ -29,10 +30,16 @@ public sealed class StubTravelAgent : ITravelAgent
     }
 
     public Task<TripPlan> RefineTripAsync(TripPlan current, string instruction, CancellationToken ct = default)
-        => Task.FromResult(current with { Summary = $"{current.Summary} Refinement: {instruction}." });
+    {
+        ArgumentNullException.ThrowIfNull(current);
+        return Task.FromResult(current with { Summary = $"{current.Summary} Refinement: {instruction}." });
+    }
 
     public Task<string> ExplainChoiceAsync(TripPlan plan, string choiceId, CancellationToken ct = default)
-        => Task.FromResult($"Choice {choiceId} was selected to balance pacing across the {plan.Days}-day trip.");
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        return Task.FromResult($"Choice {choiceId} was selected to balance pacing across the {plan.Days}-day trip.");
+    }
 
     public async IAsyncEnumerable<string> StreamPlanAsync(TripRequest request, [EnumeratorCancellation] CancellationToken ct = default)
     {

@@ -1,6 +1,7 @@
 using Serilog;
 using TravelAssistant.Agent;
 using TravelAssistant.Agent.Abstractions;
+using TravelAssistant.Api;
 using TravelAssistant.Api.Auth;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -39,10 +40,17 @@ builder.Services.AddSingleton<IClientIpResolver, RfcForwardedClientIpResolver>()
 // APP-3 — ITravelAgent stub (Semantic Kernel impl coming in APP-3 follow-up).
 builder.Services.AddSingleton<ITravelAgent, StubTravelAgent>();
 
+// SEC-3/SEC-5 — security wire-ins (SSRF handler on outbound HttpClients,
+// ProductionGuard + /health/prod-guard).
+builder.AddSecurityWireIns();
+
 var app = builder.Build();
 
 // APP-1 — Aspire default endpoints (/health, /alive in Development).
 app.MapDefaultEndpoints();
+
+// SEC-5 — hard startup gate + /health/prod-guard.
+app.UseSecurityWireIns();
 
 // Configure the HTTP request pipeline
 if (app.Environment.IsDevelopment())
