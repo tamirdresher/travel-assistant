@@ -1,0 +1,112 @@
+# LP-005 semgrep rules — "Remember last viewed page" storage hygiene
+# Path-scoped to apps/web. Enforces the binding contract in
+# docs/security/last-viewed-page-threat-model.md §8.
+rules:
+  - id: no-raw-lastpage-localstorage-write
+    message: >-
+      All writes to ta.nav.lastPage* MUST go through apps/web/src/nav/setLastPage.ts.
+      Raw localStorage.setItem on this key is forbidden (LP-005 §8.1).
+    severity: ERROR
+    languages: [ts, tsx, js, jsx]
+    paths:
+      include:
+        - apps/web/**
+      exclude:
+        - apps/web/src/nav/setLastPage.ts
+        - apps/web/src/nav/lastPageStorage.ts
+        - "**/*.test.ts"
+        - "**/*.test.tsx"
+        - "**/*.spec.ts"
+        - "**/*.spec.tsx"
+        - "**/__tests__/**"
+    pattern-either:
+      - pattern: localStorage.setItem("ta.nav.lastPage.v1", ...)
+      - pattern: localStorage.setItem('ta.nav.lastPage.v1', ...)
+      - pattern: window.localStorage.setItem("ta.nav.lastPage.v1", ...)
+      - pattern: window.localStorage.setItem('ta.nav.lastPage.v1', ...)
+
+  - id: no-dynamic-lastpage-key
+    message: >-
+      Storage key must be the literal 'ta.nav.lastPage.v1'. No template strings,
+      no concatenation, no variable indirection (LP-005 §8.2).
+    severity: ERROR
+    languages: [ts, tsx, js, jsx]
+    paths:
+      include:
+        - apps/web/src/nav/**
+    pattern-either:
+      - pattern: localStorage.setItem(`ta.nav.lastPage$...`, ...)
+      - pattern: localStorage.getItem(`ta.nav.lastPage$...`)
+      - pattern: localStorage.removeItem(`ta.nav.lastPage$...`)
+      - pattern: localStorage.setItem("ta.nav.lastPage." + $X, ...)
+      - pattern: localStorage.setItem('ta.nav.lastPage.' + $X, ...)
+
+  - id: no-lastpage-search-in-telemetry
+    message: >-
+      Telemetry payloads MUST NOT include lastPage.search — search params on
+      travel-assistant carry PII (origin/dest/dates/pax) and potentially tokens
+      (LP-005 §2 Information disclosure, §8.7). Use pathname only.
+    severity: ERROR
+    languages: [ts, tsx, js, jsx]
+    paths:
+      include:
+        - apps/web/**
+    pattern-either:
+      - pattern: track($EVENT, { ..., search: $LP.search, ... })
+      - pattern: logEvent($EVENT, { ..., search: $LP.search, ... })
+      - pattern: telemetry.$M($EVENT, { ..., search: $LP.search, ... })
+      - pattern: analytics.$M($EVENT, { ..., search: $LP.search, ... })
+      - pattern: track($EVENT, { ..., lastPage: $LP, ... })
+      - pattern: logEvent($EVENT, { ..., lastPage: $LP, ... })
+
+  - id: lastpage-restore-must-validate-path
+    message: >-
+      router.replace / router.push with a value sourced from getLastPage() MUST
+      be wrapped by isSafeRelativePath() and the auth-gate check (LP-005 §3.1, §4).
+      Pass the validated string explicitly — never the raw object.
+    severity: ERROR
+    languages: [ts, tsx, js, jsx]
+    paths:
+      include:
+        - apps/web/**
+      exclude:
+        - "**/*.test.*"
+        - "**/__tests__/**"
+    pattern-either:
+      - pattern: router.replace(getLastPage())
+      - pattern: router.push(getLastPage())
+      - pattern: router.replace(getLastPage().pathname)
+      - pattern: router.push(getLastPage().pathname)
+      - pattern: |
+          $LP = getLastPage();
+          ...
+          router.replace($LP.pathname)
+      - pattern: |
+          $LP = getLastPage();
+          ...
+          router.push($LP.pathname)
+
+  - id: no-lastpage-write-on-deny-list-route
+    message: >-
+      setLastPage() must not be called from auth/checkout-confirm/oauth-callback
+      route files. These are transient pages — recording them as the "last page"
+      either confuses (login form when signed in) or is dangerous (OAuth callback
+      replay). LP-005 §5 deny-list.
+    severity: ERROR
+    languages: [ts, tsx, js, jsx]
+    paths:
+      include:
+        - "**/login/**"
+        - "**/signin/**"
+        - "**/signup/**"
+        - "**/register/**"
+        - "**/auth/callback/**"
+        - "**/oauth/**"
+        - "**/verify-email/**"
+        - "**/reset-password/**"
+        - "**/checkout/confirm/**"
+        - "**/payments/result/**"
+        - "**/logout/**"
+    pattern-either:
+      - pattern: setLastPage(...)
+      - pattern: lastPageStorage.set(...)
