@@ -24,6 +24,9 @@ param refreshTokenSigningKey string
 @description('Long-lived ("remember me") refresh token TTL in seconds. Default 30 days.')
 param refreshTokenLongTtlSeconds int = 2592000
 
+@description('Absolute cap on refresh token family lifetime in seconds. Default 90 days per RM-005.')
+param refreshTokenAbsoluteCapSeconds int = 7776000
+
 @description('Auth cookie domain for this environment (e.g., .dev.travel-assistant.example.com)')
 param authCookieDomain string
 
@@ -87,6 +90,7 @@ module authSecrets './modules/authSecrets.bicep' = {
     keyVaultName: keyVault.outputs.keyVaultName
     refreshTokenSigningKey: refreshTokenSigningKey
     refreshTokenLongTtlSeconds: refreshTokenLongTtlSeconds
+    refreshTokenAbsoluteCapSeconds: refreshTokenAbsoluteCapSeconds
     authCookieDomain: authCookieDomain
     authCookieSameSite: 'Lax'
   }
@@ -119,4 +123,7 @@ output staticWebAppDefaultHostname string = staticWebApp.outputs.defaultHostname
 output staticWebAppName string = staticWebApp.outputs.staticWebAppName
 output authRefreshTokenSigningKeySecretUri string = authSecrets.outputs.signingKeySecretUri
 output authRefreshTokenLongTtlSecretUri string = authSecrets.outputs.longTtlSecretUri
+output authRefreshTokenAbsoluteCapSecretUri string = authSecrets.outputs.absoluteCapSecretUri
 output authCookieDomainSecretUri string = authSecrets.outputs.cookieDomainSecretUri
+output authCookieNameSecretUri string = authSecrets.outputs.cookieNameSecretUri
+output authCookiePathSecretUri string = authSecrets.outputs.cookiePathSecretUri

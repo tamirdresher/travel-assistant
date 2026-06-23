@@ -1,0 +1,105 @@
+name: remember-me-gate
+
+# RM-005 contract-invariants gate.
+# Prevents future PRs from sliding the refresh token into web storage,
+# renaming the cookie, dropping the CSRF header, or losing the family-id column.
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/web/**'
+      - 'src/TravelAssistant.Api/**'
+      - 'infra/bicep/**'
+      - 'upstream-transplants/remember-me/**'
+
+jobs:
+  contract-invariants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: rememberMe preference must use canonical 'ta.auth.rememberMe' key
+        run: |
+          set -e
+          if grep -RnE "localStorage\.(setItem|set)\(['\"]ta[._-]?auth[._-]?rememberMe['\"]" apps/web \
+               | grep -v "'ta.auth.rememberMe'" | grep -v '"ta.auth.rememberMe"'; then
+            echo "::error::Non-canonical rememberMe key found. Only 'ta.auth.rememberMe' is allowed (RM-005)."
+            exit 1
+          fi
+
+      - name: rememberMe writes must be confined to setRememberMe.ts
+        run: |
+          set -e
+          OFFENDERS=$(grep -RlE "localStorage\.(setItem|set)\(['\"]ta\.auth\.rememberMe" apps/web \
+                      | grep -v "setRememberMe\.ts" || true)
+          if [ -n "$OFFENDERS" ]; then
+            echo "::error::ta.auth.rememberMe is written outside setRememberMe.ts:"
+            echo "$OFFENDERS"
+            exit 1
+          fi
+
+      - name: refresh token must not appear in any web storage call
+        run: |
+          set -e
+          if grep -RnE "(localStorage|sessionStorage)\.[a-zA-Z]+\([^)]*([Tt]oken|ta_rt|refresh)" apps/web; then
+            echo "::error::Token-shaped value written to web storage. RM-005 forbids this."
+            exit 1
+          fi
+
+      - name: sessionStorage is banned for auth artifacts
+        run: |
+          set -e
+          if grep -RnE "sessionStorage\.[a-zA-Z]+\([^)]*(auth|rememberMe|refresh|token)" apps/web; then
+            echo "::error::sessionStorage used for an auth artifact. RM-005 forbids this (defeats persistence)."
+            exit 1
+          fi
+
+      - name: refresh cookie name must be ta_rt
+        run: |
+          set -e
+          if grep -RnE "(Set-Cookie|Cookies\.Append|cookies\.set|res\.cookie)\([^)]*['\"](ta_refresh|refreshToken|ta-refresh)['\"]" src apps; then
+            echo "::error::Refresh cookie must be named 'ta_rt' per RM-005."
+            exit 1
+          fi
+
+      - name: refresh cookie path must be /api/auth
+        run: |
+          set -e
+          OFFENDERS=$(grep -RnE "ta_rt" src apps | grep -iE "path\s*[:=]\s*['\"]/" | grep -viE "['\"]/api/auth['\"]" || true)
+          if [ -n "$OFFENDERS" ]; then
+            echo "::error::ta_rt cookie set with non-/api/auth Path:"
+            echo "$OFFENDERS"
+            exit 1
+          fi
+
+      - name: /refresh and /logout endpoints must require X-TA-Refresh header
+        run: |
+          set -e
+          MISSING=0
+          for f in $(grep -RIl --include="*.cs" --include="*.ts" -E "(/api/auth/refresh|/api/auth/logout)" src apps 2>/dev/null); do
+            if ! grep -q "X-TA-Refresh" "$f"; then
+              echo "::error::$f references /refresh or /logout but does not enforce X-TA-Refresh header"
+              MISSING=1
+            fi
+          done
+          exit $MISSING
+
+      - name: RefreshTokens schema must include FamilyId
+        run: |
+          set -e
+          if ! grep -RIn --include="*.cs" -E "RefreshToken[s]?.*FamilyId|FamilyId.*RefreshToken" src; then
+            echo "::error::RefreshTokens table missing FamilyId column (required for family-revocation on reuse)."
+            exit 1
+          fi
+
+      - name: Bicep auth secrets must encode RM-005 numeric contract
+        run: |
+          set -e
+          F=infra/bicep/modules/authSecrets.bicep
+          test -f "$F" || { echo "::error::$F missing"; exit 1; }
+          grep -q "refreshTokenTtlSeconds int = 28800"           "$F" || { echo "::error::short TTL must default to 28800 (8h)";   exit 1; }
+          grep -q "refreshTokenLongTtlSeconds int = 2592000"     "$F" || { echo "::error::long TTL must default to 2592000 (30d)"; exit 1; }
+          grep -q "refreshTokenAbsoluteCapSeconds int = 7776000" "$F" || { echo "::error::absolute cap must default to 7776000 (90d)"; exit 1; }
+          grep -q "authCookieName string = 'ta_rt'"              "$F" || { echo "::error::cookie name must default to ta_rt";      exit 1; }
+          grep -q "authCookiePath string = '/api/auth'"          "$F" || { echo "::error::cookie path must default to /api/auth";  exit 1; }

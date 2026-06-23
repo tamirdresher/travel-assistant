@@ -5,11 +5,20 @@ param keyVaultName string
 @secure()
 param refreshTokenSigningKey string
 
-@description('Standard refresh token TTL in seconds. Default 7 days.')
-param refreshTokenTtlSeconds int = 604800
+@description('Standard refresh token sliding TTL in seconds. Per sec-hard RM-005: 8 hours.')
+param refreshTokenTtlSeconds int = 28800
 
-@description('Long-lived ("remember me") refresh token TTL in seconds. Default 30 days.')
+@description('Long-lived ("remember me") refresh token sliding TTL in seconds. Per RM-005: 30 days.')
 param refreshTokenLongTtlSeconds int = 2592000
+
+@description('Absolute cap for any refresh token family (remember-me or not). Per RM-005: 90 days. After this the user MUST re-authenticate regardless of sliding renewals.')
+param refreshTokenAbsoluteCapSeconds int = 7776000
+
+@description('Auth cookie name. Per RM-005 the refresh token cookie is "ta_rt".')
+param authCookieName string = 'ta_rt'
+
+@description('Auth cookie path. Per RM-005 the cookie scope is restricted to /api/auth.')
+param authCookiePath string = '/api/auth'
 
 @description('Auth cookie domain for this environment (e.g., .dev.travel-assistant.example.com)')
 param authCookieDomain string
@@ -90,8 +99,50 @@ resource cookieSameSiteSecret 'Microsoft.KeyVault/vaults/secrets@2023-02-01' = {
   }
 }
 
+// Absolute cap — hard upper bound on token family lifetime even with sliding renewals (RM-005).
+resource absoluteCapSecret 'Microsoft.KeyVault/vaults/secrets@2023-02-01' = {
+  parent: kv
+  name: 'Auth--RefreshToken--AbsoluteCapSeconds'
+  properties: {
+    value: string(refreshTokenAbsoluteCapSeconds)
+    contentType: 'text/plain'
+    attributes: {
+      enabled: true
+    }
+  }
+}
+
+// Cookie name — locked to ta_rt by RM-005. Stored so the API reads it from KV not appsettings.
+resource cookieNameSecret 'Microsoft.KeyVault/vaults/secrets@2023-02-01' = {
+  parent: kv
+  name: 'Auth--Cookie--Name'
+  properties: {
+    value: authCookieName
+    contentType: 'text/plain'
+    attributes: {
+      enabled: true
+    }
+  }
+}
+
+// Cookie path — restricted to /api/auth so the cookie is never sent to static assets or the Next.js app router.
+resource cookiePathSecret 'Microsoft.KeyVault/vaults/secrets@2023-02-01' = {
+  parent: kv
+  name: 'Auth--Cookie--Path'
+  properties: {
+    value: authCookiePath
+    contentType: 'text/plain'
+    attributes: {
+      enabled: true
+    }
+  }
+}
+
 output signingKeySecretUri string = signingKeySecret.properties.secretUri
 output ttlSecretUri string = ttlSecret.properties.secretUri
 output longTtlSecretUri string = longTtlSecret.properties.secretUri
+output absoluteCapSecretUri string = absoluteCapSecret.properties.secretUri
 output cookieDomainSecretUri string = cookieDomainSecret.properties.secretUri
 output cookieSameSiteSecretUri string = cookieSameSiteSecret.properties.secretUri
+output cookieNameSecretUri string = cookieNameSecret.properties.secretUri
+output cookiePathSecretUri string = cookiePathSecret.properties.secretUri

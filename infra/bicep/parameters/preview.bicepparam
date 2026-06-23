@@ -12,4 +12,5 @@ param tags = {
 
 param refreshTokenSigningKey = readEnvironmentVariable('AZURE_REFRESH_TOKEN_SIGNING_KEY', '')
 param refreshTokenLongTtlSeconds = 2592000
+param refreshTokenAbsoluteCapSeconds = 7776000
 param authCookieDomain = '.preview.travel-assistant.example.com'
