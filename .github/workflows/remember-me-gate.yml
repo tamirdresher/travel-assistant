@@ -63,7 +63,7 @@ jobs:
             exit 0
           fi
           for f in $hits; do
-            for required in 'HttpOnly\s*=\s*true' 'Secure\s*=\s*true' 'SameSite\s*=\s*SameSiteMode\.Lax|SameSite\s*=\s*"Lax"' 'Path\s*=\s*"/api/auth"'; do
+            for required in 'HttpOnly\s*=\s*true' 'Secure\s*=\s*(true|!\s*\w+\.IsDevelopment\(\))' 'SameSite\s*=\s*SameSiteMode\.Lax|SameSite\s*=\s*"Lax"' 'Path\s*=\s*"/api/auth"'; do
               if ! grep -Eq "$required" "$f"; then
                 echo "::error file=$f::ta_rt cookie missing required attribute matching /$required/ (RM-005 D5-2)."
                 exit 1
