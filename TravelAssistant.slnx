@@ -1,5 +1,6 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/TravelAssistant.Api/TravelAssistant.Api.csproj" />
+    <Project Path="src/TravelAssistant.Web/TravelAssistant.Web.csproj" />
   </Folder>
 </Solution>

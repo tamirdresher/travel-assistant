@@ -1,0 +1,25 @@
+@inherits LayoutComponentBase
+
+@*
+    MudBlazor providers per XD ADR-0002 (MudBlazor component library).
+    XD-6b _AppTheme.razor (branch xd/design-baseline) will replace
+    Theme/AppTheme.cs with a Razor partial that lifts every value from
+    docs/design/tokens.json into MudTheme. Until then, MudBlazor defaults.
+
+    Modal Deferral Rule (XD): MudDialog/MudPopover MUST defer while
+    TurnState is Streaming or PendingPatch, drain on turn.end. Enforced in
+    hub client wrapper when APP-2 chat UI components land.
+*@
+
+<MudThemeProvider Theme="@TravelAssistant.Web.Theme.AppTheme.Theme" />
+<MudPopoverProvider />
+<MudDialogProvider />
+<MudSnackbarProvider />
+
+@Body
+
+<div id="blazor-error-ui">
+    An unhandled error has occurred.
+    <a href="" class="reload">Reload</a>
+    <a class="dismiss">🗙</a>
+</div>
