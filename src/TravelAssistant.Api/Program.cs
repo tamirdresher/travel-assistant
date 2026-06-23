@@ -1,5 +1,6 @@
 using Serilog;
 using TravelAssistant.Api.Auth;
+using TravelAssistant.Api.Checkout;
 using TravelAssistant.Api.Realtime;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -38,6 +39,10 @@ builder.Services.AddSingleton<IUserLookup>(_ => new InMemoryUserLookup(Array.Emp
 // peer IP is always used (correct for single-node dev).
 builder.Services.AddSingleton<IClientIpResolver, RfcForwardedClientIpResolver>();
 
+// CHECKOUT — state-machine driven checkout flow (Cart -> Details -> Payment -> Confirmed)
+// with Idempotency-Key replay protection and a pluggable IPaymentProvider.
+builder.Services.AddCheckout();
+
 var app = builder.Build();
 
 // Configure the HTTP request pipeline
@@ -56,6 +61,9 @@ app.MapLoginEndpoint();
 
 // APP-2 — SignalR chat hub at /hubs/chat (XD-locked event vocab).
 app.MapHub<ChatHub>("/hubs/chat");
+
+// CHECKOUT — POST /checkout + GET /orders/{id}
+app.MapCheckoutEndpoints();
 
 // Health check endpoint
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }))
