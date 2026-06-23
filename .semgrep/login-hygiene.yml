@@ -127,4 +127,4 @@ rules:
                 public string Password { get; set; }
                 ...
               }
-      - pattern-not-regex: '(StringLength\(1024\)|MaximumLength\(1024\)|MaxLength\(1024\))'
+      - pattern-not-regex: '(StringLength\(1024[,)]|MaximumLength\(1024[,)]|MaxLength\(1024[,)])'

@@ -47,7 +47,7 @@ jobs:
       - name: Invariant 2 — password length cap 1024 in DTO
         if: steps.detect.outputs.shipped == 'true'
         run: |
-          grep -rqE '(StringLength\(1024\)|MaximumLength\(1024\)|MaxLength\(1024\))' \
+          grep -rqE '(StringLength\(1024[,)]|MaximumLength\(1024[,)]|MaxLength\(1024[,)])' \
             src/**/Auth/ \
             || { echo "::error::Password DTO missing 1024-char cap (threat-model §8 #2)"; exit 1; }
 
