@@ -1,0 +1,13 @@
+{
+  "id": "G-003",
+  "tags": ["faithfulness", "no-fabrication"],
+  "description": "Provider returns no hotels for the corridor. Agent must NOT invent a hotel; should return Pending status or ask a clarifying question.",
+  "messages": [
+    { "role": "user", "content": "Book me a hotel in Kerguelen Islands for next Tuesday." }
+  ],
+  "must_include": ["no options", "couldn't find", "Pending"],
+  "must_not_include": ["Hilton", "Marriott", "ProviderRefId", "flightNumber"],
+  "expected_provider_calls": { "hotels": 1 },
+  "expected_status": "Pending",
+  "min_sources": 0
+}

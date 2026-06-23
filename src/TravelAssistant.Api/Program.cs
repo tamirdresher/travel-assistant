@@ -1,5 +1,7 @@
 using Serilog;
 using TravelAssistant.Api.Auth;
+using TravelAssistant.Api.Checkout;
+using TravelAssistant.Api.Realtime;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -18,6 +20,12 @@ builder.Services.AddOpenApi();
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+// APP-2 — SignalR ChatHub (XD-locked event vocab). Singletons for in-memory
+// turn registry + grounding tracker; multi-replica requires Redis backplane (APP-1 dep).
+builder.Services.AddSignalR();
+builder.Services.AddSingleton<ITurnRegistry, TurnRegistry>();
+builder.Services.AddSingleton<IGroundingTracker, GroundingTracker>();
+
 // LOGIN-001 — auth services. Two-layer RL is IMemoryCache-backed in dev;
 // per §5 the prod swap MUST be a distributed cache.
 builder.Services.AddMemoryCache();
@@ -30,6 +38,10 @@ builder.Services.AddSingleton<IUserLookup>(_ => new InMemoryUserLookup(Array.Emp
 // `Auth:TrustedProxyCidrs` from configuration; empty list (default) means
 // peer IP is always used (correct for single-node dev).
 builder.Services.AddSingleton<IClientIpResolver, RfcForwardedClientIpResolver>();
+
+// CHECKOUT — state-machine driven checkout flow (Cart -> Details -> Payment -> Confirmed)
+// with Idempotency-Key replay protection and a pluggable IPaymentProvider.
+builder.Services.AddCheckout();
 
 var app = builder.Build();
 
@@ -46,6 +58,12 @@ app.UseHttpsRedirection();
 
 // LOGIN-001 — POST /api/auth/login (activates login-gate.yml code-presence checks).
 app.MapLoginEndpoint();
+
+// APP-2 — SignalR chat hub at /hubs/chat (XD-locked event vocab).
+app.MapHub<ChatHub>("/hubs/chat");
+
+// CHECKOUT — POST /checkout + GET /orders/{id}
+app.MapCheckoutEndpoints();
 
 // Health check endpoint
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }))

@@ -1,0 +1,13 @@
+{
+  "name": "travel-assistant-smoke",
+  "version": "0.0.0",
+  "private": true,
+  "description": "REL-3 post-deploy Playwright smoke. Run: STAGING_BASE_URL=https://... npx playwright test --project=smoke",
+  "scripts": {
+    "test:smoke": "playwright test --project=smoke",
+    "install:browsers": "playwright install --with-deps chromium"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}

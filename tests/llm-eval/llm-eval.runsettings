@@ -1,0 +1,8 @@
+<RunSettings>
+  <RunConfiguration>
+    <!-- Skip live-grading tests unless LLM_EVAL_LIVE=1. Schema tests always run. -->
+    <EnvironmentVariables>
+      <LLM_EVAL_LIVE>0</LLM_EVAL_LIVE>
+    </EnvironmentVariables>
+  </RunConfiguration>
+</RunSettings>
