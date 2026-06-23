@@ -100,17 +100,9 @@ rules:
           $AUDIT.Write(..., email: $REQ.Email, ...)
       - pattern-regex: 'LoginAudit\w*\([^)]*\bemail\s*:\s*\w+\.Email\b'
 
-  - id: login-must-cap-password-length
-    message: |
-      Login DTO MUST cap password length at 1024 chars (see login-threat-model.md §8 #2)
-      to prevent Argon2id CPU-DoS. Use [StringLength(1024)] or .MaximumLength(1024) on the
-      Password property.
-    severity: ERROR
-    languages: [generic]
-    paths:
-      include:
-        - "src/**/Auth/**Login*.cs"
-        - "src/**/Auth/AuthContracts.cs"
-    patterns:
-      - pattern-regex: 'public\s+(sealed\s+|partial\s+)*(class|record)\s+\w*Login\w*Request\b'
-      - pattern-not-regex: 'StringLength\(\s*1024|MaximumLength\(\s*1024|MaxLength\(\s*1024'
+  # NOTE: login-must-cap-password-length is enforced by the bash gate
+  # (login-gate.yml Invariant 2). Semgrep's pattern-not-regex scope (matched
+  # region, not whole file) makes a reliable "DTO MUST contain cap" rule
+  # impossible without false positives. The bash gate's aggregate file scan
+  # (greps for StringLength(1024|MaximumLength(1024|MaxLength(1024 across
+  # src/**/Auth/) is the canonical check.
