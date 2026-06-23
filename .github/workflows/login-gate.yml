@@ -56,7 +56,8 @@ jobs:
         run: |
           grep -rqEi '(argon2id|Konscious\.Security\.Cryptography\.Argon2id)' src/**/Auth/ \
             || { echo "::error::Argon2id not found in Auth (threat-model §8 #3)"; exit 1; }
-          if grep -rq 'BCrypt' src/**/Auth/; then
+          # Ignore comments — match only actual BCrypt usage (using statements or member access).
+          if grep -rEn '(^|[^/])\s*(using\s+[A-Za-z0-9_.]*BCrypt|BCrypt\.[A-Za-z_])' src/**/Auth/ | grep -vE '^\s*//'; then
             echo "::error::BCrypt found in Auth — Argon2id required (threat-model §4)"
             exit 1
           fi

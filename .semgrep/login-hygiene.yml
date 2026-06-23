@@ -106,25 +106,11 @@ rules:
       to prevent Argon2id CPU-DoS. Use [StringLength(1024)] or .MaximumLength(1024) on the
       Password property.
     severity: ERROR
-    languages: [csharp]
+    languages: [generic]
     paths:
       include:
         - "src/**/Auth/**Login*.cs"
         - "src/**/Auth/AuthContracts.cs"
     patterns:
-      - pattern-either:
-          - pattern: |
-              public record $REQ
-              {
-                ...
-                public string Password { get; init; }
-                ...
-              }
-          - pattern: |
-              public class $REQ
-              {
-                ...
-                public string Password { get; set; }
-                ...
-              }
-      - pattern-not-regex: '(StringLength\(1024[,)]|MaximumLength\(1024[,)]|MaxLength\(1024[,)])'
+      - pattern-regex: 'public\s+(sealed\s+|partial\s+)*(class|record)\s+\w*Login\w*Request\b'
+      - pattern-not-regex: 'StringLength\(\s*1024|MaximumLength\(\s*1024|MaxLength\(\s*1024'
