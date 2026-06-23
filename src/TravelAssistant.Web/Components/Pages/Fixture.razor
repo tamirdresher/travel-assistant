@@ -1,0 +1,211 @@
+@page "/_fixture/{Component}"
+@layout EmptyLayout
+@inject IWebHostEnvironment Env
+@using Microsoft.AspNetCore.Components
+@using TravelAssistant.Web.Fixtures
+@using TravelAssistant.Web.Components.Layout
+
+@*
+    APP-11 — Axe fixture pages per docs/design/fixtures/axe-fixture-contract.md (XD-6c).
+
+    Hard contract (do NOT change without an XD ADR):
+    - Route: /_fixture/{component}?state=...&seed=...
+    - Dev-only (404 in non-Development environments).
+    - <body data-fixture-ready="true"> set via rAF after stable render so QA's axe
+      runner can wait deterministically.
+    - 10 canonical state values from FixtureStates.Canonical.
+    - In-process, deterministic fixture data. No real PII, geo, or prices.
+    - modal-deferred MUST render trigger button but NOT mount MudDialog.
+    - streaming uses narrow aria-live="polite" scope on partials container only.
+    - pending-patch uses aria-busy + SR-only text marker (no color-only).
+    - applied-patch renders >20 blocks to trigger virtualization regression guard.
+*@
+
+@if (!Env.IsDevelopment())
+{
+    <PageTitle>Not found</PageTitle>
+    <main role="main"><h1>Not found</h1></main>
+}
+else if (!_validComponent)
+{
+    <PageTitle>Fixture: unknown component</PageTitle>
+    <main role="main">
+        <h1>Unknown component: @Component</h1>
+        <p role="alert">Allowed components: @string.Join(", ", AllowedComponents)</p>
+    </main>
+}
+else if (!_validState)
+{
+    <PageTitle>Fixture: unknown state</PageTitle>
+    <main role="main">
+        <h1>Unknown state for @Component</h1>
+        <p role="alert">Allowed states: @string.Join(", ", FixtureStates.Canonical)</p>
+    </main>
+}
+else
+{
+    <PageTitle>Fixture: @Component / @FixtureStates.ToSlug(_state)</PageTitle>
+    <main role="main"
+          data-fixture-component="@Component"
+          data-fixture-state="@FixtureStates.ToSlug(_state)"
+          data-fixture-seed="@_seed"
+          data-fixture-turn-id="@_turnId">
+        <h1 id="fixture-heading">Fixture: @Component / @FixtureStates.ToSlug(_state)</h1>
+
+        @switch (_state)
+        {
+            case FixtureState.Idle:
+            case FixtureState.Empty:
+                <section aria-labelledby="fixture-heading">
+                    <p>No messages.</p>
+                </section>
+                break;
+
+            case FixtureState.Loading:
+                <section aria-labelledby="fixture-heading" aria-busy="true">
+                    @RenderMessages(_messages)
+                    <p><span class="sr-only">Loading.</span></p>
+                </section>
+                break;
+
+            case FixtureState.Streaming:
+                <section aria-labelledby="fixture-heading">
+                    @* Stable user message — outside live region. *@
+                    @RenderMessage(_messages[0])
+                    @* Narrow aria-live scope ONLY around the active assistant bubble. *@
+                    <div data-testid="chat-typing" aria-live="polite" aria-atomic="false">
+                        @RenderMessage(_messages[1])
+                    </div>
+                </section>
+                break;
+
+            case FixtureState.PendingPatch:
+                <section aria-labelledby="fixture-heading">
+                    @foreach (var m in _messages)
+                    {
+                        <article data-testid="@TestIdFor(m.Role)"
+                                 data-patch-status="@m.PatchStatus"
+                                 aria-busy="@(m.PatchStatus == "pending" ? "true" : "false")">
+                            <p>@m.Text</p>
+                            @if (m.PatchStatus == "pending")
+                            {
+                                <span class="sr-only"> (pending confirmation)</span>
+                            }
+                        </article>
+                    }
+                </section>
+                break;
+
+            case FixtureState.AppliedPatch:
+                <section aria-labelledby="fixture-heading">
+                    @RenderMessages(_messages)
+                </section>
+                break;
+
+            case FixtureState.ModalDeferred:
+                <section aria-labelledby="fixture-heading">
+                    @RenderMessages(_messages)
+                    @* Trigger renders, but dialog DOES NOT mount.
+                       QA spec no-modal-mid-stream relies on absence of [role=dialog]. *@
+                    <button type="button"
+                            data-testid="modal-trigger"
+                            data-modal-deferred="true"
+                            aria-haspopup="dialog"
+                            aria-disabled="true">
+                        View details
+                    </button>
+                </section>
+                break;
+
+            case FixtureState.TurnCancelled:
+                <section aria-labelledby="fixture-heading">
+                    @RenderMessages(_messages)
+                    @* Focus return target — chat composer focus per matrix rule require_focus_testid. *@
+                    <input type="text"
+                           data-testid="chat-composer"
+                           aria-label="Message"
+                           autofocus />
+                </section>
+                break;
+
+            case FixtureState.TurnError:
+            case FixtureState.Error:
+                <section aria-labelledby="fixture-heading">
+                    @RenderMessages(_messages)
+                    <div role="alert">An error occurred. Please retry.</div>
+                </section>
+                break;
+        }
+    </main>
+
+    @* Defer body marker to next animation frame so axe runner waits past stable layout. *@
+    <script>
+        (function () {
+            requestAnimationFrame(function () {
+                requestAnimationFrame(function () {
+                    document.body.setAttribute('data-fixture-ready', 'true');
+                });
+            });
+        })();
+    </script>
+}
+
+@code {
+    [Parameter] public string Component { get; set; } = string.Empty;
+    [SupplyParameterFromQuery(Name = "state")] public string? StateParam { get; set; }
+    [SupplyParameterFromQuery(Name = "seed")] public int? Seed { get; set; }
+    [SupplyParameterFromQuery(Name = "turnId")] public string? TurnIdParam { get; set; }
+
+    // Allowlist — sync with docs/design/blazor/components.md (XD-6a).
+    private static readonly string[] AllowedComponents =
+    {
+        "Chat", "MessageList", "MessageBubble", "ComposerBar", "ToolCallDrawer",
+        "ItineraryPanel", "ItineraryItem", "FlightCard", "HotelCard", "PlaceCard",
+    };
+
+    private FixtureState _state;
+    private int _seed;
+    private string _turnId = string.Empty;
+    private bool _validComponent;
+    private bool _validState;
+    private IReadOnlyList<FixtureMessage> _messages = Array.Empty<FixtureMessage>();
+
+    protected override void OnParametersSet()
+    {
+        _validComponent = AllowedComponents.Contains(Component, StringComparer.OrdinalIgnoreCase);
+        _validState = FixtureStates.TryParse(StateParam, out _state);
+        _seed = Seed ?? 42;
+        _turnId = string.IsNullOrWhiteSpace(TurnIdParam) ? $"turn-{_seed}" : TurnIdParam!;
+        if (_validComponent && _validState)
+        {
+            _messages = FixtureData.ForState(_state, _seed);
+        }
+    }
+
+    private static string TestIdFor(string role) => role switch
+    {
+        "user" => "chat-msg-user",
+        "assistant" => "chat-msg-assistant",
+        "system" => "chat-msg-system",
+        _ => "chat-msg-system",
+    };
+
+    private RenderFragment RenderMessages(IReadOnlyList<FixtureMessage> msgs) => builder =>
+    {
+        foreach (var m in msgs)
+        {
+            builder.AddContent(0, RenderMessage(m));
+        }
+    };
+
+    private RenderFragment RenderMessage(FixtureMessage m) => builder =>
+    {
+        builder.OpenElement(0, "article");
+        builder.AddAttribute(1, "data-testid", TestIdFor(m.Role));
+        builder.AddAttribute(2, "data-patch-status", m.PatchStatus);
+        builder.OpenElement(3, "p");
+        builder.AddContent(4, m.Text);
+        builder.CloseElement();
+        builder.CloseElement();
+    };
+}
