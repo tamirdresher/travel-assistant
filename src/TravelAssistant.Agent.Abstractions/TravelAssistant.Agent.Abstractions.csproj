@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591</NoWarn>
+    <PackageId>TravelAssistant.Agent.Abstractions</PackageId>
+    <Description>Public contracts for ITravelAgent and provider adapters. Stable surface QA records fixtures against.</Description>
+  </PropertyGroup>
+  <ItemGroup>
+    <None Include="Schemas\*.json" CopyToOutputDirectory="PreserveNewest" Pack="true" PackagePath="schemas\" />
+  </ItemGroup>
+</Project>

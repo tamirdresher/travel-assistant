@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://travel-assistant.dev/schemas/itinerary.schema.json",
+  "title": "TripPlan",
+  "description": "APP-2 contract. ITravelAgent responses MUST validate against this schema.",
+  "type": "object",
+  "required": ["id", "destination", "start", "end", "currency", "totalCost", "flights", "days", "provenance"],
+  "properties": {
+    "id": { "type": "string", "minLength": 1 },
+    "destination": { "type": "string", "minLength": 1 },
+    "start": { "type": "string", "format": "date" },
+    "end": { "type": "string", "format": "date" },
+    "currency": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "totalCost": { "type": "number", "minimum": 0 },
+    "flights": { "type": "array", "items": { "$ref": "#/$defs/flight" } },
+    "days": { "type": "array", "items": { "$ref": "#/$defs/day" } },
+    "provenance": { "type": "array", "items": { "$ref": "#/$defs/sourceRef" } }
+  },
+  "$defs": {
+    "iata": { "type": "string", "pattern": "^[A-Z]{3}$" },
+    "status": { "type": "string", "enum": ["Grounded", "Pending", "Stale"] },
+    "flight": {
+      "type": "object",
+      "required": ["id", "origin", "destination", "departsAt", "arrivesAt", "status"],
+      "properties": {
+        "id": { "type": "string" },
+        "origin": { "$ref": "#/$defs/iata" },
+        "destination": { "$ref": "#/$defs/iata" },
+        "departsAt": { "type": "string", "format": "date-time" },
+        "arrivesAt": { "type": "string", "format": "date-time" },
+        "carrier": { "type": ["string", "null"] },
+        "flightNumber": { "type": ["string", "null"] },
+        "priceUsd": { "type": ["number", "null"], "minimum": 0 },
+        "status": { "$ref": "#/$defs/status" },
+        "sources": { "type": ["array", "null"], "items": { "$ref": "#/$defs/sourceRef" } }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "Pending" } } },
+          "then": { "properties": { "flightNumber": { "type": "null" } } }
+        }
+      ]
+    },
+    "day": {
+      "type": "object",
+      "required": ["date", "dayNumber", "activities"],
+      "properties": {
+        "date": { "type": "string", "format": "date" },
+        "dayNumber": { "type": "integer", "minimum": 1 },
+        "activities": { "type": "array", "items": { "$ref": "#/$defs/activity" } }
+      }
+    },
+    "activity": {
+      "type": "object",
+      "required": ["id", "kind", "title", "startsAt", "durationMinutes", "status"],
+      "properties": {
+        "id": { "type": "string" },
+        "kind": { "type": "string", "enum": ["Meal", "Sight", "Transit", "Lodging", "Free", "Booking", "Other"] },
+        "title": { "type": "string" },
+        "startsAt": { "type": "string", "format": "date-time" },
+        "durationMinutes": { "type": "integer", "exclusiveMinimum": 0 },
+        "costUsd": { "type": ["number", "null"], "minimum": 0 },
+        "locationName": { "type": ["string", "null"] },
+        "status": { "$ref": "#/$defs/status" },
+        "sources": { "type": ["array", "null"], "items": { "$ref": "#/$defs/sourceRef" } }
+      }
+    },
+    "sourceRef": {
+      "type": "object",
+      "required": ["provider", "refId", "retrievedAt"],
+      "properties": {
+        "provider": { "type": "string" },
+        "refId": { "type": "string" },
+        "retrievedAt": { "type": "string", "format": "date-time" },
+        "url": { "type": ["string", "null"], "format": "uri" }
+      }
+    }
+  }
+}
