@@ -1,0 +1,87 @@
+rules:
+  - id: no-raw-theme-localstorage-write
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >
+      Writes to localStorage key 'ta.theme' must go through the typed setter
+      (see apps/web/src/theme/setTheme.ts). Direct setItem calls bypass enum
+      validation and allow arbitrary strings to land in storage, which the boot
+      script then trusts. See docs/security/dark-mode-threat-model.md §4.
+    paths:
+      include:
+        - "apps/**"
+        - "src/**"
+        - "packages/**"
+      exclude:
+        - "**/setTheme.ts"
+        - "**/setTheme.js"
+        - "**/theme/boot-script.ts"
+        - "**/*.test.*"
+        - "**/*.spec.*"
+    patterns:
+      - pattern-either:
+          - pattern: localStorage.setItem("ta.theme", $X)
+          - pattern: localStorage.setItem('ta.theme', $X)
+          - pattern: window.localStorage.setItem("ta.theme", $X)
+          - pattern: window.localStorage.setItem('ta.theme', $X)
+      - pattern-not: localStorage.setItem("ta.theme", "light")
+      - pattern-not: localStorage.setItem("ta.theme", "dark")
+      - pattern-not: localStorage.setItem("ta.theme", "system")
+      - pattern-not: localStorage.setItem('ta.theme', 'light')
+      - pattern-not: localStorage.setItem('ta.theme', 'dark')
+      - pattern-not: localStorage.setItem('ta.theme', 'system')
+
+  - id: no-dynamic-theme-key
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >
+      localStorage key for the theme must be the literal string 'ta.theme'.
+      Constructing the key dynamically defeats the static rule above and the
+      typed setter contract. See docs/security/dark-mode-threat-model.md §4.
+    paths:
+      include:
+        - "apps/**"
+        - "src/**"
+        - "packages/**"
+      exclude:
+        - "**/*.test.*"
+        - "**/*.spec.*"
+    patterns:
+      - pattern-either:
+          - pattern: localStorage.setItem(`ta.$...X`, $Y)
+          - pattern: localStorage.setItem("ta." + $X, $Y)
+
+  - id: no-unsafe-inline-csp
+    languages: [generic]
+    severity: ERROR
+    message: >
+      'unsafe-inline' in script-src disables CSP's primary XSS defense.
+      The dark-mode boot script must be pinned by 'sha256-…' hash instead.
+      See docs/security/dark-mode-threat-model.md §3 (D5-1).
+    paths:
+      include:
+        - "**/*.html"
+        - "**/*.config.*"
+        - "**/csp*.{js,ts,json}"
+        - "**/middleware/**"
+    pattern-regex: "script-src[^;]*'unsafe-inline'"
+
+  - id: theme-boot-script-no-network
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: >
+      The theme boot script must only touch documentElement and localStorage.
+      Any fetch/XHR/import/eval/console output here breaks the CSP hash and
+      bloats the trust surface of the inline script. See §3.
+    paths:
+      include:
+        - "**/theme/boot-script.*"
+        - "**/theme/bootScript.*"
+    patterns:
+      - pattern-either:
+          - pattern: fetch(...)
+          - pattern: new XMLHttpRequest()
+          - pattern: import($X)
+          - pattern: eval($X)
+          - pattern: new Function($...X)
+          - pattern: console.$M(...)
