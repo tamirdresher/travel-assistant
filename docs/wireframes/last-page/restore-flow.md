@@ -21,7 +21,7 @@ This document is the single source of truth for the **client-side restore flow**
                                       │
                                       ▼
                        ┌─────────────────────────────┐
-                       │ read `ta.lastPage` from     │
+                       │ read `ta.nav.lastPage.v1`   │
                        │ localStorage (typed reader) │
                        └──────────────┬──────────────┘
                                       │
@@ -115,7 +115,7 @@ export const DENY_SEARCH_KEYS: readonly string[] = [
 
 ### D3 — Per-device only in v1
 
-- Storage: `localStorage` key `ta.lastPage`.
+- Storage: `localStorage` key `ta.nav.lastPage.v1` (literal — semgrep `no-dynamic-lastpage-key` rejects template strings/concat).
 - No server sync. No cross-device restore. No account-bound storage.
 - v2 stretch (NOT this PR): account-bound restore via `/me/preferences` round-trip, gated on the same D4 opt-out.
 
@@ -137,8 +137,8 @@ Settings → Privacy section gets one new control:
 - Default: **ON** (checked).
 - DOM contract (load-bearing, do not rename): `id="settings-remember-last-page"`, `name="rememberLastPage"`, `data-testid="settings-remember-last-page"`.
 - Native `<input type="checkbox">` + native `<label for>`. No ARIA shims. (DM-001 + RM-002 precedent.)
-- Persistence key for the **preference itself** (separate from the stored route): `ta.lastPage.enabled` ∈ `"true"` | `"false"`. Absent = treated as `"true"` (default-on).
-- **On flip ON → OFF:** immediately call `localStorage.removeItem('ta.lastPage')`. Future writes are no-ops. No confirmation dialog (reversible, low blast radius). Emit `lastpage.optout.changed` with `{ enabled: false }`.
+- Persistence key for the **preference itself** (separate from the stored route): `ta.nav.lastPage.optOut.v1` ∈ `"true"` | `"false"`. **Semantic inversion note:** the key name is `optOut`, so `"true"` = user opted OUT (feature disabled), `"false"` = feature enabled. Absent = treated as `"false"` (default-on, i.e. not opted out). LP-002 setter must handle this inversion — do NOT rename the key, sec-hard locked it.
+- **On flip ON → OFF (user opts out):** immediately call `localStorage.removeItem('ta.nav.lastPage.v1')`. Future writes are no-ops. No confirmation dialog (reversible, low blast radius). Emit `lastpage.optout.changed` with `{ enabled: false }`.
 - **On flip OFF → ON:** future writes resume. Do NOT retroactively populate a value. Emit `lastpage.optout.changed` with `{ enabled: true }`.
 - Microcopy is final. Specifically not "Remember my activity" (too broad, sounds like full history) and not "Resume where I left off" (implies form/scroll restore — we don't do that, D1).
 - Hint copy lives inside `<label>` as the second line via `<small>` element. Not `aria-describedby` (matches RM-002 D5 precedent — SR reads label fully, no tooltip-only affordance).
@@ -188,7 +188,7 @@ When restore fails and the failure is **user-visible** (see §1.2 — schema/sto
 ## 4. Stored-value schema (normative)
 
 ```ts
-// localStorage key: "ta.lastPage"
+// localStorage key: "ta.nav.lastPage.v1"
 type StoredLastPage = {
   v: 1;                     // schema version. ALWAYS present. LP-002 reader rejects anything where v !== 1.
   pathname: string;         // e.g. "/trips/abc-123". MUST start with "/". MUST NOT include origin.
@@ -210,7 +210,7 @@ The reader function must be **total** (never throws into the React tree):
 ```ts
 function readLastPage(): StoredLastPage | null {
   try {
-    const raw = localStorage.getItem('ta.lastPage');
+    const raw = localStorage.getItem('ta.nav.lastPage.v1');
     if (raw === null) return null;
     const parsed = JSON.parse(raw);
     if (typeof parsed !== 'object' || parsed === null) return null;
@@ -302,3 +302,32 @@ QT does **not** need to test the localStorage contents directly — that's a uni
 - **To planning:** v2 cross-device restore — when, and gated on what? Not blocking this PR.
 
 — experience-design-squad, 2026-06-23
+
+---
+
+## 6. Contract reconciliation (2026-06-23, post LP-005 sign-off)
+
+Initial XD draft had drifted key names. Locked canonical values below — these are what LP-002 implements, LP-005 semgrep enforces, LP-006 tests, LP-007 gates. Reader+writer in this doc above have been updated in-place; this table is the single quick-reference for downstream squads.
+
+| Concern | Canonical value | Owner-of-record | Drift was |
+|---|---|---|---|
+| Stored-route key | `ta.nav.lastPage.v1` (literal) | sec-hard LP-005 §3 | XD said `ta.lastPage` |
+| Opt-out key | `ta.nav.lastPage.optOut.v1` (literal) | sec-hard LP-005 | XD said `ta.lastPage.enabled` (also inverted semantics — see note in §2/D4) |
+| Setter module path | `apps/web/src/navigation/setLastPage.ts` | planning LP-002 + app-dev scaffold on disk | sec-hard message said `nav/`; the canonical path is `navigation/` because app-dev already scaffolded there (verified on `feature/last-viewed-page` working tree). Filing back to sec-hard as a semgrep rule-path correction. |
+| Validator regex | `/^\/[A-Za-z0-9/_\-]*(\?[A-Za-z0-9=&_\-%.,]*)?$/`, anchored, max 1024 chars, decode-re-check, run on write AND read | sec-hard LP-005 §3.1 | XD did not specify regex (correctly deferred to sec) |
+| Token-param deny-list | sec-hard `TOKEN_PARAM_DENYLIST` in `docs/security/last-viewed-page-threat-model.md` §3.2 — strip ALL params if ANY match, store `search: ''` | sec-hard LP-005 §3.2 | XD's D2 deny-list listed only `token\|code\|state\|session\|otp` — superseded by sec-hard's longer canonical list |
+| Serialized payload cap | 2KB (sec-hard §7); reader clears + returns null if exceeded | sec-hard LP-005 §7 | XD did not cap |
+| Staleness gate | 30d (XD §4.1 stands — sec-hard did not counter) | XD LP-001 §4.1 | — |
+| Opt-out test selectors | `data-testid="settings-remember-last-page"`, `name="rememberLastPage"`, `id="settings-remember-last-page"` | XD LP-001 §5 | — (DOM contract preserved) |
+| Toast contract | `role="status" aria-live="polite" data-testid="lastpage-restore-failed-toast"` | XD LP-001 §3 | — |
+
+**Semantic inversion gotcha for LP-002:** the preference key is named `optOut`, NOT `enabled`. App-dev hook pseudocode:
+
+```ts
+const optedOut = localStorage.getItem('ta.nav.lastPage.optOut.v1') === 'true';
+const featureEnabled = !optedOut; // default: feature ON when key absent
+```
+
+The Settings checkbox UI still presents as **"Remember the last page I was on"** with `checked = featureEnabled`. On user uncheck → write `'true'` to the optOut key + `removeItem('ta.nav.lastPage.v1')`. On user check → write `'false'` (or `removeItem`, treat as default). UI label/copy in §2/D4 is UNCHANGED — the inversion is purely a storage detail.
+
+**No other XD contracts changed.** First-paint behavior, route-template-only telemetry, restore-failure toast, 12-row E2E matrix, microcopy, opt-out flow, focus/SR/touch contracts all stand as written.
