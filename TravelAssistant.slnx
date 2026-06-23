@@ -1,5 +1,12 @@
 <Solution>
   <Folder Name="/src/">
     <Project Path="src/TravelAssistant.Api/TravelAssistant.Api.csproj" />
+    <Project Path="src/TravelAssistant.AppHost/TravelAssistant.AppHost.csproj" />
+    <Project Path="src/TravelAssistant.ServiceDefaults/TravelAssistant.ServiceDefaults.csproj" />
+    <Project Path="src/TravelAssistant.Agent/TravelAssistant.Agent.csproj" />
+    <Project Path="src/TravelAssistant.Agent.Abstractions/TravelAssistant.Agent.Abstractions.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/TravelAssistant.Agent.Tests/TravelAssistant.Agent.Tests.csproj" />
   </Folder>
 </Solution>

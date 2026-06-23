@@ -1,7 +1,12 @@
 using Serilog;
+using TravelAssistant.Agent;
+using TravelAssistant.Agent.Abstractions;
 using TravelAssistant.Api.Auth;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// APP-1 — Aspire service defaults (OTel, health, resilient HTTP, discovery).
+builder.AddServiceDefaults();
 
 // Configure Serilog
 builder.Host.UseSerilog((context, configuration) =>
@@ -31,7 +36,13 @@ builder.Services.AddSingleton<IUserLookup>(_ => new InMemoryUserLookup(Array.Emp
 // peer IP is always used (correct for single-node dev).
 builder.Services.AddSingleton<IClientIpResolver, RfcForwardedClientIpResolver>();
 
+// APP-3 — ITravelAgent stub (Semantic Kernel impl coming in APP-3 follow-up).
+builder.Services.AddSingleton<ITravelAgent, StubTravelAgent>();
+
 var app = builder.Build();
+
+// APP-1 — Aspire default endpoints (/health, /alive in Development).
+app.MapDefaultEndpoints();
 
 // Configure the HTTP request pipeline
 if (app.Environment.IsDevelopment())
@@ -47,7 +58,7 @@ app.UseHttpsRedirection();
 // LOGIN-001 — POST /api/auth/login (activates login-gate.yml code-presence checks).
 app.MapLoginEndpoint();
 
-// Health check endpoint
+// Health check endpoint — preserved for login-gate.yml workflow compatibility.
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }))
     .WithName("HealthCheck")
     .WithTags("Health")
@@ -70,6 +81,23 @@ app.MapPost("/api/search", (SearchRequest request) =>
 .WithTags("Search")
 .Produces<SearchResponse>(StatusCodes.Status200OK);
 
+// APP-1 + APP-3 — minimal E2E itinerary planning endpoint.
+app.MapPost("/api/itinerary/plan", async (PlanTripRequest req, ITravelAgent agent, CancellationToken ct) =>
+{
+    if (string.IsNullOrWhiteSpace(req.Destination))
+        return Results.BadRequest(new { error = "destination is required" });
+    if (req.Days < 1 || req.Days > 30)
+        return Results.BadRequest(new { error = "days must be between 1 and 30" });
+
+    var plan = await agent.PlanTripAsync(
+        new TripRequest(req.Destination, req.Days, req.BudgetUsd, req.Interests), ct);
+    return Results.Ok(plan);
+})
+.WithName("PlanItinerary")
+.WithTags("Itinerary")
+.Produces<TripPlan>(StatusCodes.Status200OK)
+.Produces(StatusCodes.Status400BadRequest);
+
 app.Run();
 
 // Request/Response DTOs
@@ -81,6 +109,8 @@ record SearchResponse
     public required string RequestId { get; init; }
     public required DateTime Timestamp { get; init; }
 }
+
+record PlanTripRequest(string Destination, int Days, decimal? BudgetUsd, IReadOnlyList<string>? Interests);
 
 // Expose Program for WebApplicationFactory<Program> in test assemblies.
 public partial class Program { }

@@ -15,6 +15,12 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\TravelAssistant.ServiceDefaults\TravelAssistant.ServiceDefaults.csproj" />
+    <ProjectReference Include="..\TravelAssistant.Agent\TravelAssistant.Agent.csproj" />
+    <ProjectReference Include="..\TravelAssistant.Agent.Abstractions\TravelAssistant.Agent.Abstractions.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="TravelAssistant.Api.Tests" />
   </ItemGroup>
 
