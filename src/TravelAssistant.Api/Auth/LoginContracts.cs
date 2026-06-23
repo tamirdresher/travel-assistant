@@ -10,8 +10,11 @@ public sealed class LoginRequest
     [StringLength(254)]
     public string Email { get; set; } = string.Empty;
 
+    // §8 #2 — literal StringLength(1024) form required by login-gate.yml grep
+    // and semgrep login-must-cap-password-length pattern-not-regex.
     [Required]
-    [StringLength(1024, MinimumLength = 1)]
+    [StringLength(1024)]
+    [MinLength(1)]
     public string Password { get; set; } = string.Empty;
 
     public bool RememberMe { get; set; }
