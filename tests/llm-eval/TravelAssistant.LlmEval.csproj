@@ -15,11 +15,24 @@
     <PackageReference Include="xunit" Version="2.9.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2" />
     <PackageReference Include="FluentAssertions" Version="6.12.1" />
+    <PackageReference Include="YamlDotNet" Version="16.1.3" />
+    <PackageReference Include="Xunit.SkippableFact" Version="1.4.13" />
   </ItemGroup>
 
   <ItemGroup>
     <None Update="goldens\*.json" CopyToOutputDirectory="PreserveNewest" />
     <None Update="fixtures\*.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <!--
+    SEC-2b corpus link. Conditional so this project builds on QA branches even
+    before security/sec-2b-prompt-injection-corpus merges to main. Once SEC-2b
+    lands, the file is auto-discovered and CorpusEchoTests activates.
+  -->
+  <ItemGroup Condition="Exists('$(MSBuildProjectDirectory)\..\TravelAssistant.Security.Tests\PromptInjection\Corpus\injection-corpus.yaml')">
+    <None Include="..\TravelAssistant.Security.Tests\PromptInjection\Corpus\injection-corpus.yaml"
+          Link="corpus\injection-corpus.yaml"
+          CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>
