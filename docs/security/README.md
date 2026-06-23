@@ -17,8 +17,9 @@ threat model, and (where applicable) implementation pointers into `src/`,
 
 ## Cross-squad dependencies
 - **SEC-1 → azure-infrastructure-squad (INF-2):** Bicep module for Key Vault
-  + managed identity is published in `infra/modules/keyvault.bicep`. Infra
-  squad owns wiring it into the env-level templates.
+  + managed identity is published in `infra/bicep/modules/keyVault.bicep`
+  (canonical, owned by azure-infrastructure-squad). Infra squad owns wiring
+  it into the env-level templates.
 - **SEC-4 → application-development-squad (APP-6):** PII field-level
   encryption requirements in `docs/security/sec-4/privacy.md`.
 - **SEC-5 → azure-infrastructure-squad (INF-4):** Production guard

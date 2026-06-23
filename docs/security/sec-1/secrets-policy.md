@@ -22,7 +22,8 @@
    is the only acceptable store for a developer's personal API keys.
 
 ## Reference Bicep
-See `infra/modules/keyvault.bicep` — soft-delete on, purge protection on,
+See `infra/bicep/modules/keyVault.bicep` (canonical, owned by
+azure-infrastructure-squad) — soft-delete on, purge protection on,
 RBAC authorization (no access policies), private endpoint ready.
 
 ## Reference Program.cs snippet
