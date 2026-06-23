@@ -1,4 +1,5 @@
 using Serilog;
+using TravelAssistant.Api;
 using TravelAssistant.Api.Auth;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -46,6 +47,12 @@ app.UseHttpsRedirection();
 
 // LOGIN-001 — POST /api/auth/login (activates login-gate.yml code-presence checks).
 app.MapLoginEndpoint();
+
+// APP-8 — runtime version surface (backs REL-4 release-notes acceptance).
+var versionInfo = VersionEndpoint.Load(app.Environment);
+app.MapVersionEndpoint(versionInfo);
+app.Logger.LogInformation("Version surface ready: {Version} commit={Commit} built={BuildTime}",
+    versionInfo.Version, versionInfo.Commit, versionInfo.BuildTime);
 
 // Health check endpoint
 app.MapGet("/health", () => Results.Ok(new { status = "ok" }))

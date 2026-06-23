@@ -18,4 +18,12 @@
     <InternalsVisibleTo Include="TravelAssistant.Api.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- APP-8 — surface version.txt at content root so VersionEndpoint can read it
+         in dev runs, container runs, and integration tests. -->
+    <None Include="..\..\version.txt" Link="version.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>
