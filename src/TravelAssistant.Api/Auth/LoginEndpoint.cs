@@ -169,13 +169,19 @@ public static class LoginEndpoint
             }
 
             // §I5 — EmailUnverified / Disabled also collapse to invalid_credentials wire.
+            // LOGIN-003 — these sub-states MUST increment per-account RL on the same
+            // rule as UnknownUser / InvalidCredentials, otherwise an attacker that
+            // discovers an unverified/disabled account email gets an unlimited
+            // password-guessing oracle (account-RL lockout never trips).
             if (!user.EmailVerified)
             {
+                rl.RecordAccountFailure(emailHash);
                 audit.Write(NewEntry(correlationId, emailHash, user.Id, clientIp, ua, LoginOutcomes.EmailUnverified, body.RememberMe, ipTrusted: ipTrusted));
                 return InvalidCredentials(ctx, correlationId);
             }
             if (user.Disabled)
             {
+                rl.RecordAccountFailure(emailHash);
                 audit.Write(NewEntry(correlationId, emailHash, user.Id, clientIp, ua, LoginOutcomes.DisabledAccount, body.RememberMe, ipTrusted: ipTrusted));
                 return InvalidCredentials(ctx, correlationId);
             }

@@ -147,12 +147,93 @@ public sealed class LoginEndpointTests : IClassFixture<LoginAppFactory>
         Assert.False(r.Headers.Contains("X-RateLimit-Limit"));
         Assert.False(r.Headers.Contains("X-RateLimit-Remaining"));
     }
+
+    // LOGIN-003 — sec-hard checklist gap: TM §I5 enumerates 7 collapse-to-401
+    // sub-states; EmailUnverified + DisabledAccount MUST be byte-identical to
+    // InvalidCredentials baseline AND MUST increment per-account RL on the same
+    // rule as UnknownUser, else they become a guessing-oracle.
+
+    [Fact]
+    public async Task EmailUnverified_returns_byte_identical_invalid_credentials_as_baseline()
+    {
+        var c = NewClient();
+        var baseline = await c.PostAsJsonAsync("/api/auth/login", new { email = LoginAppFactory.SeedEmail, password = "wrong-password" });
+        var unverified = await c.PostAsJsonAsync("/api/auth/login", new { email = LoginAppFactory.UnverifiedEmail, password = LoginAppFactory.OtherUserPassword });
+
+        Assert.Equal(baseline.StatusCode, unverified.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, unverified.StatusCode);
+        Assert.Equal(await baseline.Content.ReadAsStringAsync(), await unverified.Content.ReadAsStringAsync());
+        Assert.False(unverified.Headers.Contains("Set-Cookie"));
+        Assert.False(unverified.Headers.Contains("X-RateLimit-Limit"));
+        Assert.False(unverified.Headers.Contains("X-RateLimit-Remaining"));
+        var a = baseline.Headers.WwwAuthenticate.ToString();
+        var b = unverified.Headers.WwwAuthenticate.ToString();
+        Assert.Equal(a, b);
+    }
+
+    [Fact]
+    public async Task DisabledAccount_returns_byte_identical_invalid_credentials_as_baseline()
+    {
+        var c = NewClient();
+        var baseline = await c.PostAsJsonAsync("/api/auth/login", new { email = LoginAppFactory.SeedEmail, password = "wrong-password" });
+        var disabled = await c.PostAsJsonAsync("/api/auth/login", new { email = LoginAppFactory.DisabledEmail, password = LoginAppFactory.OtherUserPassword });
+
+        Assert.Equal(baseline.StatusCode, disabled.StatusCode);
+        Assert.Equal(HttpStatusCode.Unauthorized, disabled.StatusCode);
+        Assert.Equal(await baseline.Content.ReadAsStringAsync(), await disabled.Content.ReadAsStringAsync());
+        Assert.False(disabled.Headers.Contains("Set-Cookie"));
+        Assert.False(disabled.Headers.Contains("X-RateLimit-Limit"));
+        var a = baseline.Headers.WwwAuthenticate.ToString();
+        var b = disabled.Headers.WwwAuthenticate.ToString();
+        Assert.Equal(a, b);
+    }
+
+    [Fact]
+    public async Task EmailUnverified_increments_per_account_rate_limit_and_eventually_locks()
+    {
+        // Per-account RL = 5 failures / 15 min → lockout. If unverified didn't
+        // increment, this loop would run forever without locking.
+        var c = NewClient();
+        HttpResponseMessage? last = null;
+        for (var i = 0; i < 5; i++)
+        {
+            last = await c.PostAsJsonAsync("/api/auth/login", new { email = LoginAppFactory.UnverifiedEmail, password = LoginAppFactory.OtherUserPassword });
+            Assert.Equal(HttpStatusCode.Unauthorized, last.StatusCode);
+        }
+
+        // 6th attempt — even with the *correct* password — must collapse to 401
+        // because the account is now RL-locked. Proves the unverified path
+        // incremented the per-account counter on attempts 1-5.
+        var locked = await c.PostAsJsonAsync("/api/auth/login", new { email = LoginAppFactory.UnverifiedEmail, password = LoginAppFactory.OtherUserPassword });
+        Assert.Equal(HttpStatusCode.Unauthorized, locked.StatusCode);
+        Assert.Equal("{\"status\":\"invalid_credentials\"}", await locked.Content.ReadAsStringAsync());
+        Assert.False(locked.Headers.Contains("Set-Cookie"));
+    }
+
+    [Fact]
+    public async Task DisabledAccount_increments_per_account_rate_limit_and_eventually_locks()
+    {
+        var c = NewClient();
+        for (var i = 0; i < 5; i++)
+        {
+            var r = await c.PostAsJsonAsync("/api/auth/login", new { email = LoginAppFactory.DisabledEmail, password = LoginAppFactory.OtherUserPassword });
+            Assert.Equal(HttpStatusCode.Unauthorized, r.StatusCode);
+        }
+
+        var locked = await c.PostAsJsonAsync("/api/auth/login", new { email = LoginAppFactory.DisabledEmail, password = LoginAppFactory.OtherUserPassword });
+        Assert.Equal(HttpStatusCode.Unauthorized, locked.StatusCode);
+        Assert.Equal("{\"status\":\"invalid_credentials\"}", await locked.Content.ReadAsStringAsync());
+        Assert.False(locked.Headers.Contains("Set-Cookie"));
+    }
 }
 
 public sealed class LoginAppFactory : WebApplicationFactory<Program>
 {
     public const string SeedEmail = "alice@example.com";
     public const string SeedPassword = "S3cret-Password!";
+    public const string UnverifiedEmail = "unverified@example.com";
+    public const string DisabledEmail = "disabled@example.com";
+    public const string OtherUserPassword = "An0ther-Password!";
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -169,9 +250,12 @@ public sealed class LoginAppFactory : WebApplicationFactory<Program>
         {
             var hasher = new Argon2idPasswordHasher();
             var hash = hasher.Hash(SeedPassword);
+            var otherHash = hasher.Hash(OtherUserPassword);
             var users = new InMemoryUserLookup(new[]
             {
                 new UserRecord("u-1", SeedEmail, "Alice", hash, EmailVerified: true, Disabled: false),
+                new UserRecord("u-2", UnverifiedEmail, "Eve", otherHash, EmailVerified: false, Disabled: false),
+                new UserRecord("u-3", DisabledEmail, "Mal", otherHash, EmailVerified: true, Disabled: true),
             });
             var existing = services.Single(d => d.ServiceType == typeof(IUserLookup));
             services.Remove(existing);
