@@ -1,0 +1,130 @@
+rules:
+  - id: login-no-password-in-logger
+    message: |
+      Password / Authorization / Cookie / Set-Cookie / refresh-token MUST NOT be logged.
+      Use structural redaction via the logging pipeline. Login secrets never leave the call.
+    severity: ERROR
+    languages: [csharp]
+    patterns:
+      - pattern-either:
+          - pattern: $LOGGER.LogInformation($MSG, ..., $X.Password, ...)
+          - pattern: $LOGGER.LogDebug($MSG, ..., $X.Password, ...)
+          - pattern: $LOGGER.LogTrace($MSG, ..., $X.Password, ...)
+          - pattern: $LOGGER.LogWarning($MSG, ..., $X.Password, ...)
+          - pattern: $LOGGER.LogError($MSG, ..., $X.Password, ...)
+          - pattern: $LOGGER.LogInformation($MSG, ..., $X.Authorization, ...)
+          - pattern: $LOGGER.LogInformation($MSG, ..., $X.Cookie, ...)
+          - pattern-regex: 'Log(Information|Debug|Trace|Warning|Error|Critical)\([^)]*\b(password|authorization|set-cookie|ta_rt)\b[^)]*\)'
+
+  - id: login-must-use-argon2id-not-bcrypt
+    message: |
+      Login password verify MUST use Argon2id (see login-threat-model.md §4).
+      BCrypt is not accepted for new code paths. If you see BCrypt here, the dummy-hash
+      path will be wrong too — fix both together.
+    severity: ERROR
+    languages: [csharp]
+    paths:
+      include:
+        - "src/**/Auth/**"
+        - "src/**/Login*.cs"
+    patterns:
+      - pattern-either:
+          - pattern: BCrypt.Net.BCrypt.Verify(...)
+          - pattern: BCrypt.Verify(...)
+          - pattern-regex: '\bBCrypt\.'
+
+  - id: login-401-must-have-no-set-cookie
+    message: |
+      A 401/Unauthorized response on /api/auth/login MUST NOT set ta_rt cookie
+      (see login-threat-model.md §8 invariant #6). Refresh cookie only on Success.
+    severity: ERROR
+    languages: [csharp]
+    paths:
+      include:
+        - "src/**/Auth/**"
+    pattern-either:
+      - pattern: |
+          return Results.Unauthorized();
+          ...
+          $CTX.Response.Cookies.Append("ta_rt", ...);
+      - pattern: |
+          $CTX.Response.Cookies.Append("ta_rt", ...);
+          ...
+          return Results.Unauthorized();
+
+  - id: login-refresh-cookie-must-use-helper
+    message: |
+      Refresh cookie writes on /login MUST go through AppendRefreshCookie helper
+      (see login-threat-model.md §8 invariant #7 + RM-005). Direct
+      Response.Cookies.Append("ta_rt", ...) bypasses HttpOnly/Secure/SameSite/Path enforcement.
+    severity: ERROR
+    languages: [csharp]
+    paths:
+      include:
+        - "src/**/Auth/**"
+      exclude:
+        - "src/**/Auth/RefreshCookie*.cs"
+    patterns:
+      - pattern: $CTX.Response.Cookies.Append("ta_rt", ...)
+
+  - id: login-no-idempotency-key-replay
+    message: |
+      Idempotency-Key on /login MUST be silently ignored (see login-threat-model.md §8 #10).
+      A replay cache on login is a credential-stuffing accelerant. Do not implement
+      idempotency caching for the login handler.
+    severity: ERROR
+    languages: [csharp]
+    paths:
+      include:
+        - "src/**/Auth/**Login*.cs"
+        - "src/**/Auth/AuthEndpoints.cs"
+    patterns:
+      - pattern-either:
+          - pattern-regex: 'Idempotency[-_]?Key.*(Cache|Store|Replay)'
+          - pattern: $CACHE.GetOrCreate($CTX.Request.Headers["Idempotency-Key"], ...)
+          - pattern: $CACHE.GetOrCreateAsync($CTX.Request.Headers["Idempotency-Key"], ...)
+
+  - id: login-email-must-be-hashed-in-audit
+    message: |
+      Audit log entries for /login MUST hash the email (SHA-256 of NFC-lowercased).
+      Raw email is forbidden in audit (see login-threat-model.md §6). Use EmailHash() helper.
+    severity: ERROR
+    languages: [csharp]
+    paths:
+      include:
+        - "src/**/Auth/**"
+    pattern-either:
+      - pattern: |
+          new LoginAuditEntry { ..., Email = $REQ.Email, ... }
+      - pattern: |
+          $AUDIT.Write(..., email: $REQ.Email, ...)
+      - pattern-regex: 'LoginAudit\w*\([^)]*\bemail\s*:\s*\w+\.Email\b'
+
+  - id: login-must-cap-password-length
+    message: |
+      Login DTO MUST cap password length at 1024 chars (see login-threat-model.md §8 #2)
+      to prevent Argon2id CPU-DoS. Use [StringLength(1024)] or .MaximumLength(1024) on the
+      Password property.
+    severity: ERROR
+    languages: [csharp]
+    paths:
+      include:
+        - "src/**/Auth/**Login*.cs"
+        - "src/**/Auth/AuthContracts.cs"
+    patterns:
+      - pattern-either:
+          - pattern: |
+              public record $REQ
+              {
+                ...
+                public string Password { get; init; }
+                ...
+              }
+          - pattern: |
+              public class $REQ
+              {
+                ...
+                public string Password { get; set; }
+                ...
+              }
+      - pattern-not-regex: '(StringLength\(1024\)|MaximumLength\(1024\)|MaxLength\(1024\))'

@@ -1,0 +1,130 @@
+name: login-gate
+
+on:
+  pull_request:
+    paths:
+      - 'src/**/Auth/**'
+      - 'apps/web/src/auth/**'
+      - 'docs/security/login-threat-model.md'
+      - '.semgrep/login-hygiene.yml'
+      - '.github/workflows/login-gate.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/**/Auth/**'
+      - 'apps/web/src/auth/**'
+
+jobs:
+  contract-invariants:
+    name: Login binding contract invariants
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Threat model exists
+        run: |
+          test -f docs/security/login-threat-model.md \
+            || { echo "::error::login-threat-model.md missing"; exit 1; }
+
+      # Skip code-presence checks if the endpoint hasn't shipped yet.
+      - name: Detect login implementation
+        id: detect
+        run: |
+          if grep -rq 'MapPost("/api/auth/login"' src/ 2>/dev/null; then
+            echo "shipped=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "shipped=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No /api/auth/login implementation found yet — skipping code-presence asserts (gate still active for spec/threat-model + semgrep job)."
+          fi
+
+      - name: Invariant 1 — body cap 4 KB enforced
+        if: steps.detect.outputs.shipped == 'true'
+        run: |
+          grep -rqE '(4\s*\*\s*1024|4096|MaxRequestBodySize.*4096|MaxBodyLength.*4096)' \
+            src/**/Auth/ \
+            || { echo "::error::No 4 KB body cap found in src/**/Auth (threat-model §8 #1)"; exit 1; }
+
+      - name: Invariant 2 — password length cap 1024 in DTO
+        if: steps.detect.outputs.shipped == 'true'
+        run: |
+          grep -rqE '(StringLength\(1024\)|MaximumLength\(1024\)|MaxLength\(1024\))' \
+            src/**/Auth/ \
+            || { echo "::error::Password DTO missing 1024-char cap (threat-model §8 #2)"; exit 1; }
+
+      - name: Invariant 3 — Argon2id present, BCrypt absent
+        if: steps.detect.outputs.shipped == 'true'
+        run: |
+          grep -rqEi '(argon2id|Konscious\.Security\.Cryptography\.Argon2id)' src/**/Auth/ \
+            || { echo "::error::Argon2id not found in Auth (threat-model §8 #3)"; exit 1; }
+          if grep -rq 'BCrypt' src/**/Auth/; then
+            echo "::error::BCrypt found in Auth — Argon2id required (threat-model §4)"
+            exit 1
+          fi
+
+      - name: Invariant 4 — SemaphoreSlim concurrency cap
+        if: steps.detect.outputs.shipped == 'true'
+        run: |
+          grep -rqE 'SemaphoreSlim\s*\(\s*8\s*[,)]' src/**/Auth/ \
+            || { echo "::error::SemaphoreSlim(8) cap on Argon2id missing (threat-model §8 #4)"; exit 1; }
+
+      - name: Invariant 5+6 — fixed 401 body, no Set-Cookie on 401
+        if: steps.detect.outputs.shipped == 'true'
+        run: |
+          grep -rq 'invalid_credentials' src/**/Auth/ \
+            || { echo "::error::Fixed 401 body \"invalid_credentials\" not found (threat-model §8 #5)"; exit 1; }
+
+      - name: Invariant 7 — AppendRefreshCookie helper used (not direct ta_rt write)
+        if: steps.detect.outputs.shipped == 'true'
+        run: |
+          # Login handler should call the helper, not write the cookie directly.
+          if grep -rE 'Response\.Cookies\.Append\("ta_rt"' src/**/Auth/Login*.cs src/**/Auth/AuthEndpoints.cs 2>/dev/null; then
+            echo "::error::Direct ta_rt cookie write in login handler — must use AppendRefreshCookie helper (threat-model §8 #7)"
+            exit 1
+          fi
+          grep -rq 'AppendRefreshCookie' src/**/Auth/ \
+            || { echo "::error::AppendRefreshCookie helper reference missing (threat-model §8 #7)"; exit 1; }
+
+      - name: Invariant 10 — Idempotency-Key NOT cached/replayed on login
+        if: steps.detect.outputs.shipped == 'true'
+        run: |
+          if grep -rEi 'Idempotency[-_]?Key.*(Cache|Store|Replay|GetOrCreate)' src/**/Auth/Login*.cs src/**/Auth/AuthEndpoints.cs 2>/dev/null; then
+            echo "::error::Idempotency-Key cache detected on login — must be silently ignored (threat-model §8 #10)"
+            exit 1
+          fi
+
+      - name: Invariant 12 — X-Correlation-Id header echoed/generated
+        if: steps.detect.outputs.shipped == 'true'
+        run: |
+          grep -rqE 'X-Correlation-Id' src/ \
+            || { echo "::error::X-Correlation-Id not referenced (threat-model §8 #12)"; exit 1; }
+
+      - name: Invariant 13 — WWW-Authenticate fixed string on 401
+        if: steps.detect.outputs.shipped == 'true'
+        run: |
+          grep -rqE 'WWW-Authenticate.*Bearer.*realm=' src/**/Auth/ \
+            || { echo "::error::WWW-Authenticate Bearer realm header missing on 401 (threat-model §8 #13)"; exit 1; }
+
+      - name: Invariant 14 — JWT not signed with HS*
+        if: steps.detect.outputs.shipped == 'true'
+        run: |
+          if grep -rqE 'SecurityAlgorithms\.Hmac(Sha256|Sha384|Sha512)' src/; then
+            echo "::error::HMAC-SHA* JWT signing detected — EdDSA or RS256 required (threat-model §4)"
+            exit 1
+          fi
+
+      - name: Invariant 15 — Account RL counter increments on UnknownUser
+        if: steps.detect.outputs.shipped == 'true'
+        run: |
+          # Heuristic: the account partition key must appear in the unknown-user branch too.
+          grep -rqE 'login:account:|account[-_]?partition' src/**/Auth/ \
+            || { echo "::error::Per-account RL partition not found (threat-model §5)"; exit 1; }
+
+  semgrep:
+    name: Semgrep login-hygiene
+    runs-on: ubuntu-latest
+    container:
+      image: returntocorp/semgrep
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run semgrep
+        run: semgrep --config .semgrep/login-hygiene.yml --error --strict --metrics=off
