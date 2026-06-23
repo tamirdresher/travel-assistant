@@ -13,6 +13,7 @@ import {
   isLastPageRecord,
   type LastPageRecord,
 } from "./types";
+import { isDenied, isSafeRelativePath } from "./lastPage.denylist";
 
 function safeLocalStorage(): Storage | null {
   try {
@@ -47,6 +48,10 @@ export function setLastPage(pathname: string, search: string): void {
     clearLastPage();
     return;
   }
+
+  // Write-side LP-001 enforcement (sec-hard semgrep + LP-007 gate).
+  if (isDenied(pathname, safeSearch)) return;
+  if (!isSafeRelativePath(pathname + safeSearch)) return;
 
   const record: LastPageRecord = {
     pathname,
@@ -92,6 +97,15 @@ export function getLastPage(): LastPageRecord | null {
     return null;
   }
   if (!isLastPageRecord(parsed)) {
+    clearLastPage();
+    return null;
+  }
+  // Read-side LP-001 enforcement: deny-list rollouts / smuggled URLs must
+  // never escape via storage seeded by an older client.
+  if (
+    isDenied(parsed.pathname, parsed.search) ||
+    !isSafeRelativePath(parsed.pathname + parsed.search)
+  ) {
     clearLastPage();
     return null;
   }

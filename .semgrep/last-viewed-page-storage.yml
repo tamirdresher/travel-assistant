@@ -4,7 +4,7 @@
 rules:
   - id: no-raw-lastpage-localstorage-write
     message: >-
-      All writes to ta.nav.lastPage* MUST go through apps/web/src/nav/setLastPage.ts.
+      All writes to ta.nav.lastPage* MUST go through apps/web/src/navigation/setLastPage.ts.
       Raw localStorage.setItem on this key is forbidden (LP-005 §8.1).
     severity: ERROR
     languages: [ts, tsx, js, jsx]

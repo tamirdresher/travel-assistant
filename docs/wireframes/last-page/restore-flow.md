@@ -1,333 +1,271 @@
-# LP-001 — "Remember last viewed page" UX contract
+# Remember Last Viewed Page — Restore Flow (LP-001)
 
-Status: **Locked** (XD, 2026-06-23). Unblocks LP-002 (storage + hook), LP-003 (route guard), LP-005 (sec-hard threat model).
-Owner: experience-design-squad. Consumers: application-development-squad, security-hardening-squad, quality-testing-squad.
-
-This document is the single source of truth for the **client-side restore flow**. Server-side / cross-device restore is explicitly out of scope (see D3).
+**Status:** Locked  
+**Owner:** experience-design-squad  
+**Epic:** LP-001..007  
+**Target repo:** tamirdresher/travel-assistant (`apps/web`, Next.js App Router)  
+**Sibling specs:** `apps/web/src/navigation/lastPage.denylist.ts` (this PR), `docs/security/last-viewed-page-threat-model.md` (LP-005)
 
 ---
 
-## 1. Cold-open restore decision tree
+## 1. Purpose
 
-> **First-paint rule (non-negotiable):** the server / static shell ALWAYS renders the `/` route. Restore happens **after** client hydration. No SSR/CSR mismatch. No flash-of-wrong-page. The user may see `/` for ~1 frame before the client replaces it — that is the contract, not a bug.
+When a user closes and reopens the app on the same device, return them to the page they were last viewing — unless doing so would leak data, break auth, or surprise them. This document is the binding UX contract for LP-002 (storage), LP-003 (route guard / restore hook), LP-004 (settings toggle), LP-005 (security), and LP-006 (test matrix).
+
+The default UX shape is **silent restore**: most users should never notice this feature; it should just feel like the app remembered. Restore failures are the only visible surface, and they are non-blocking.
+
+---
+
+## 2. First-paint contract (non-negotiable)
+
+> **First paint is ALWAYS `/` skeleton. Restore happens after client hydration.**
+
+Rationale:
+
+- Next.js App Router SSR cannot read `localStorage`. Any attempt to restore server-side produces an SSR/CSR mismatch and a flash-of-wrong-page on slow clients.
+- A skeleton at `/` is what un-restored cold-open users already see today — restore is purely additive.
+- Restoring after hydration costs one `router.replace()` call (no full reload, no second SSR roundtrip).
+
+What this means for LP-003:
+
+- `useRestoreLastPage()` MUST be a client-only effect that fires once on app mount.
+- It MUST NOT block first paint, suspense, or hydration. No throwing during render. No suspense boundary.
+- If hydration fails, restore silently no-ops (user stays on `/`).
+
+What this means for LP-006:
+
+- E2E asserts first paint is the `/` skeleton, then asserts URL bar updates to the restored route after hydration completes. Playwright tracing or `page.waitForURL` after `domcontentloaded`.
+
+---
+
+## 3. Decision tree (cold open)
 
 ```
-                       ┌─────────────────────────────┐
-                       │  App boots → render `/`     │
-                       │  skeleton (SSR or static)   │
-                       └──────────────┬──────────────┘
-                                      │
-                              hydration complete
-                                      │
-                                      ▼
-                       ┌─────────────────────────────┐
-                       │ read `ta.nav.lastPage.v1`   │
-                       │ localStorage (typed reader) │
-                       └──────────────┬──────────────┘
-                                      │
-            ┌─────────────────────────┼───────────────────────────┐
-            │                         │                           │
-            ▼                         ▼                           ▼
-   ┌────────────────┐        ┌────────────────┐         ┌────────────────────┐
-   │ no value /     │        │ value present  │         │ value present      │
-   │ malformed JSON │        │ AND valid      │         │ BUT invalid        │
-   │ AND opt-out OFF│        │ (see §1.1)     │         │ (see §1.2)         │
-   └───────┬────────┘        └───────┬────────┘         └─────────┬──────────┘
-           │                         │                            │
-           ▼                         ▼                            ▼
-   stay on `/`             router.replace(stored)         router.replace(`/`)
-   no toast                no toast                       + toast (§3)
-                           no SR announce                 + clear stored value
-                                                          + telemetry event
+On app mount (client only, after hydration)
+│
+├─ Opt-out is OFF (ta.privacy.rememberLastPage === false)?
+│  └─ YES → no-op. Stay on `/`. No toast. No telemetry.
+│
+├─ User arrived via deep link (history.length === 1 && pathname !== '/')?
+│  └─ YES → no-op. They explicitly navigated. Stay on the deep-linked URL.
+│           DO NOT overwrite their intent with a stored route.
+│           (Note: do NOT clear stored value — they may close this tab and
+│            reopen `/` later, at which point restore should still work.)
+│
+├─ getLastPage() === null?
+│  └─ YES → no-op. Stay on `/`. No toast.
+│
+├─ Stored pathname matches deny-list (see §4)?
+│  └─ YES → clearLastPage(). Stay on `/`. No toast.
+│           (Stale value from before deny-list expanded — quietly drop it.)
+│
+├─ Stored pathname is auth-gated AND user is signed out?
+│  └─ YES → clearLastPage(). Stay on `/`. No toast.
+│           (Signed-out users see `/` as the natural landing. A toast here
+│            would be noisy and confusing — they didn't ask to go anywhere.)
+│
+├─ router.replace(stored.pathname + stored.search) → 404 or throws?
+│  └─ YES → clearLastPage(). Show toast (see §6). URL stays `/`.
+│
+└─ All checks pass
+   └─ router.replace(stored.pathname + stored.search). Silent. No toast.
 ```
 
-### 1.1 What makes a stored route **valid**
+**Implementation note for LP-003:** the 404 path is detectable only after the navigation resolves (Next.js renders the not-found segment). Wire the toast off the `not-found.tsx` boundary or a `useEffect` in the page that detects a stored-restore origin. Use a sessionStorage breadcrumb `ta.nav.lastPage.restoring` set right before `router.replace` and cleared on the destination page's mount or in `not-found.tsx`; if `not-found.tsx` sees the breadcrumb, it triggers the toast and `router.replace('/')`.
 
-ALL must hold:
+---
 
-1. **Pathname is in the route manifest.** The route is still mounted in the current build (compare against the Next.js `app/` directory output captured at build time — LP-002 surfaces the list).
-2. **Auth requirement satisfied.** If the route is auth-gated and the user is currently signed out, it is invalid. (Route-guard ownership is LP-003.)
-3. **Required search params resolvable.** A route may declare a list of required search-param keys (e.g. `/trips/search` requires `from`, `to`, `depart`). If any required key is missing or empty, invalid.
-4. **Pathname is not on the deny-list (D2).**
-5. **Stored payload schema-valid** (see §4).
+## 4. Locked decisions
 
-If 1 + 2 + 3 + 4 + 5 → **navigate**. Otherwise → **fall back**.
+### D1 — Scope: pathname + search params, nothing else (v1)
 
-### 1.2 Invalid-restore failure modes (all route to fallback + toast)
+**Stored:** `pathname` (e.g. `/flights/search`) + `search` (e.g. `?from=TLV&to=JFK&date=2026-08-01`).
 
-| Failure | Trigger | Telemetry reason |
+**NOT stored in v1** (explicit non-goals — do not "just add" any of these without a new RFC):
+
+- Scroll position
+- Form field state (drafts, partial inputs)
+- Modal / dialog open state
+- Tab state within a page (`<Tabs>` selection)
+- Hash fragment (`#section-2`) — pathnames only, no `#`
+
+Rationale: each of these has its own state-restoration semantics and failure modes (form state can be stale or invalid; modals can be auth-gated; tabs are component-local). Adding them piecemeal creates a quagmire. v2 RFC if requested.
+
+### D2 — Deny-list (routes that MUST NOT be stored)
+
+Authoritative list lives in `apps/web/src/navigation/lastPage.denylist.ts` (shipped alongside this doc, see §9). Conceptually:
+
+**Pathname patterns (regex, anchored to start of pathname):**
+
+- `^/login(/|$)`
+- `^/signup(/|$)`
+- `^/logout(/|$)`
+- `^/auth(/|$)` — covers `/auth/verify-email`, `/auth/reset`, etc.
+- `^/oauth/`  — `/oauth/callback`, `/oauth/start`
+- `^/checkout/confirm(/|$)` — payment confirmation is single-use
+- `^/_next/` — Next.js internals (defensive)
+- `^/api/` — API routes (defensive; should never be a viewed page anyway)
+
+**Search-param patterns (any match → skip, case-insensitive):**
+
+- `[?&]token=`
+- `[?&]code=` — OAuth authorization code
+- `[?&]id_token=`
+- `[?&]state=` — OAuth state, also CSRF state
+- `[?&]access_token=`
+- `[?&]refresh_token=`
+- `[?&]session=`
+- `[?&]otp=`
+- `[?&]password=` — defensive; should never appear in URL but if a misconfigured form GETs, drop it
+
+**Behavior:** deny-list is enforced on **both write AND read**. Write enforcement prevents new entries. Read enforcement protects against rollouts where the deny-list expands (a stored value that's now denied is dropped silently on next mount).
+
+### D3 — Per-device only (v1)
+
+- `localStorage`, key `ta.nav.lastPage.v1`. Single device. Single browser. Single profile.
+- No server sync. No cookie. No cross-device.
+- Cross-device restore (e.g., close on desktop, reopen on mobile) is a v2 RFC. It requires API surface, identity tie, and a privacy review materially larger than v1.
+
+### D4 — Opt-out: Settings → Privacy → "Remember the last page I was on" (default ON)
+
+- Default: **ON** (this feature is privacy-low-risk per LP-005 deny-list + per-device scope).
+- Storage key: `ta.privacy.rememberLastPage` (boolean string `"true" | "false"`, missing/malformed → treat as `true`).
+- When toggled **OFF**: setLastPage becomes a no-op AND existing stored value is cleared **immediately** (synchronous in the toggle handler). LP-004 ships the UI.
+- When toggled **ON** (from OFF): start writing from the next navigation. Do NOT backfill the current page synchronously — wait for the next route change, so the user understands the toggle takes effect going forward.
+
+Copy (locked, for LP-004):
+
+```
+Remember the last page I was on
+When you close and reopen Travel Assistant on this device,
+we'll take you back to where you left off.
+This only works on this browser. Sign-in, sign-up, and
+payment pages are never remembered.
+```
+
+Microcopy constraints: ≤ 250 chars for the helper. No tooltip — always-visible helper text below the toggle. Matches RM (Remember Me) pattern.
+
+### D5 — Privacy: pathname goes to telemetry, search params do NOT
+
+- Any telemetry event about restore (success, failure, skipped) MAY include the pathname.
+- Telemetry MUST NEVER include the search string. Travel-assistant search params carry PII: origin/destination cities, dates, passenger counts, fare classes, sometimes traveler names.
+- LP-005 semgrep rule `no-lastpage-search-in-telemetry` enforces this at CI.
+- Telemetry event names pre-allocated (server-side OTel counters, matching DM-006 / RM-005 pattern — no client beacon):
+  - `nav.lastpage.stored` (counter, attribute: `pathname`)
+  - `nav.lastpage.restored` (counter, attribute: `pathname`)
+  - `nav.lastpage.restore_skipped` (counter, attribute: `pathname`, `reason` ∈ {`opt_out`, `deep_link`, `none_stored`, `deny_list`, `auth_gated`})
+  - `nav.lastpage.restore_failed` (counter, attribute: `pathname`, `reason` ∈ {`not_found`, `threw`})
+
+### D6 — No animation on restore
+
+- `router.replace()` swaps the route in place. No transition, no fade, no "Welcome back" splash.
+- Restore is meant to feel like the app remembered, not like a guided tour.
+- Reduced-motion users get the same UX (no special case).
+
+---
+
+## 5. Accessibility contract
+
+### 5.1 Restore happens silently
+
+- Successful restore makes **no** screen-reader announcement of its own. The destination page's existing title / heading / live regions are the only SR-visible change.
+- Rationale: announcing "Restored your last page" on every cold open is noisy and infantilizing for daily users. The URL change + heading change is sufficient.
+
+### 5.2 Restore-failure toast
+
+- Surface: existing app toast region.
+- ARIA: `role="status"` `aria-live="polite"`. **NOT** `role="alert"` — this is informational, not urgent.
+- Dismissable. Auto-dismiss after 8s.
+- Focus is NOT moved. The toast appears, the polite live region reads it once, focus stays where the user expects (typically the first focusable element on `/`).
+- Copy (locked):
+
+  ```
+  We couldn't reopen your last page. You're back on home.
+  ```
+
+  No exclamation marks. No emoji. No "Sorry!" — neutral, factual.
+
+- Test selector: `data-testid="lastpage-restore-failed-toast"`.
+
+### 5.3 Settings toggle (LP-004)
+
+- Native `<input type="checkbox">` + native `<label for>`. No ARIA shims.
+- Touch target ≥ 44px mobile / ≥ 32px desktop (matches DM-001 / RM-002).
+- Focus ring uses `--color-focus-ring` (DM-001 token).
+- Toggling fires no SR announcement beyond the native checkbox state change.
+
+### 5.4 Reduced-motion / NO_COLOR / SR_MODE
+
+- Restore is invisible to all three modes — there is nothing to suppress.
+- Toast renders in all modes (it's text-only, no animation beyond the existing toast region's enter/exit, which is already reduced-motion-aware per app convention).
+
+---
+
+## 6. Test selectors (locked — do not rename without QT signoff)
+
+| Surface | Selector | Owner |
 |---|---|---|
-| Route removed | Pathname not in manifest (deploy removed it) | `route_removed` |
-| Auth required | Route gated, user signed out | `auth_required` |
-| Missing params | Required search params missing | `missing_params` |
-| Deny-listed | Pathname matches D2 regex | `deny_listed` |
-| Schema invalid | JSON parse failed / wrong shape | `schema_invalid` |
-| Storage error | localStorage threw (quota / disabled) | `storage_error` |
+| Restore-failed toast | `[data-testid="lastpage-restore-failed-toast"]` | LP-003 |
+| Settings toggle input | `[data-testid="settings-remember-lastpage"]` (also `name="rememberLastPage"`, `id="settings-remember-lastpage"`) | LP-004 |
+| Settings toggle label | `label[for="settings-remember-lastpage"]` | LP-004 |
+| Settings toggle helper | `[data-testid="settings-remember-lastpage-hint"]` | LP-004 |
+| sessionStorage restore breadcrumb (internal) | key `ta.nav.lastPage.restoring` (any truthy value) | LP-003 |
 
-`storage_error` and `schema_invalid` do **not** show a toast (user never opted in to expect a restore). Other reasons **do**.
+QT writes Playwright/RTL queries against these. Renaming any of them is a breaking change.
 
 ---
 
-## 2. Locked decisions
+## 7. Edge cases handled
 
-### D1 — Scope: pathname + search params ONLY
-
-Store: `{ pathname: string, search: string, savedAt: number }`.
-
-**Explicitly excluded from v1:**
-
-- ❌ Scroll position (UX bug magnet on infinite-scroll lists; defer to v2 behind an explicit per-route opt-in)
-- ❌ Form state (privacy risk: drafts may contain PII; conflicts with auth/payment routes)
-- ❌ Modal / drawer / dialog open-state (most are transient UI; restoring them on cold open is jarring)
-- ❌ Hash fragment (`location.hash`) — anchor-jumps reset on reload anyway; storing them implies a guarantee we can't keep
-
-If a consumer needs scroll/form/modal restoration, that is a **separate** feature with its own UX contract. Do not bolt it onto LP-001.
-
-### D2 — Deny-list (never stored, never restored)
-
-Stored as a regex array shipped in `packages/web/src/last-page/deny-list.ts` (path is normative — LP-002 lands the file).
-
-```ts
-// docs/wireframes/last-page/deny-list.ts — normative copy, LP-002 mirrors this verbatim
-export const DENY_LIST: readonly RegExp[] = [
-  /^\/login\/?$/,
-  /^\/signup\/?$/,
-  /^\/logout\/?$/,
-  /^\/auth(\/|$)/,           // covers /auth, /auth/verify, /auth/reset, etc.
-  /^\/oauth\/callback\/?$/,
-  /^\/checkout\/confirm\/?$/, // post-payment landing — re-visiting is wrong (and may double-charge UX-wise)
-  /^\/_next(\/|$)/,
-  /^\/api(\/|$)/,
-];
-
-// Search-param deny — applied to BOTH pathname store AND restore decision.
-// If ANY of these keys appears, do not store and do not restore.
-export const DENY_SEARCH_KEYS: readonly string[] = [
-  'token',     // email verify, password reset, magic link
-  'code',      // OAuth authorization code
-  'state',     // OAuth CSRF token
-  'session',   // session-handoff parameter
-  'otp',
-];
-```
-
-**Both checks run on write AND on read.** Belt-and-braces — if the deny-list grows between a write and a later read (e.g. a hotfix adds `/admin` to the list), the read-time check protects users on the old store.
-
-### D3 — Per-device only in v1
-
-- Storage: `localStorage` key `ta.nav.lastPage.v1` (literal — semgrep `no-dynamic-lastpage-key` rejects template strings/concat).
-- No server sync. No cross-device restore. No account-bound storage.
-- v2 stretch (NOT this PR): account-bound restore via `/me/preferences` round-trip, gated on the same D4 opt-out.
-
-Rationale: cross-device restore needs a server-side privacy review (does "last viewed page" leak browsing history across the user's family-shared account?), conflict-resolution UX (which device wins?), and probably a "trusted device" UX. None of that is needed to ship LP-001 value.
-
-### D4 — Opt-out: Settings → Privacy
-
-Settings → Privacy section gets one new control:
-
-```
-┌──────────────────────────────────────────────────────────────┐
-│ ☑  Remember the last page I was on                            │
-│    When you reopen Travel Assistant, we'll take you back      │
-│    to the page you were last viewing on this device.          │
-│    Stored only on this device. Not shared across devices.     │
-└──────────────────────────────────────────────────────────────┘
-```
-
-- Default: **ON** (checked).
-- DOM contract (load-bearing, do not rename): `id="settings-remember-last-page"`, `name="rememberLastPage"`, `data-testid="settings-remember-last-page"`.
-- Native `<input type="checkbox">` + native `<label for>`. No ARIA shims. (DM-001 + RM-002 precedent.)
-- Persistence key for the **preference itself** (separate from the stored route): `ta.nav.lastPage.optOut.v1` ∈ `"true"` | `"false"`. **Semantic inversion note:** the key name is `optOut`, so `"true"` = user opted OUT (feature disabled), `"false"` = feature enabled. Absent = treated as `"false"` (default-on, i.e. not opted out). LP-002 setter must handle this inversion — do NOT rename the key, sec-hard locked it.
-- **On flip ON → OFF (user opts out):** immediately call `localStorage.removeItem('ta.nav.lastPage.v1')`. Future writes are no-ops. No confirmation dialog (reversible, low blast radius). Emit `lastpage.optout.changed` with `{ enabled: false }`.
-- **On flip OFF → ON:** future writes resume. Do NOT retroactively populate a value. Emit `lastpage.optout.changed` with `{ enabled: true }`.
-- Microcopy is final. Specifically not "Remember my activity" (too broad, sounds like full history) and not "Resume where I left off" (implies form/scroll restore — we don't do that, D1).
-- Hint copy lives inside `<label>` as the second line via `<small>` element. Not `aria-describedby` (matches RM-002 D5 precedent — SR reads label fully, no tooltip-only affordance).
-
-### D5 — Privacy: pathname only in telemetry
-
-- Telemetry **never includes search params, never includes pathname dynamic segments resolved to values**.
-- Allowed in events: route **template** (e.g. `/trips/[tripId]`), NOT the resolved pathname (`/trips/abc-123`).
-- For travel-assistant specifically, search params routinely carry: city names (`from=TLV&to=JFK`), dates (`depart=2026-07-04`), passenger counts (`pax=2`), traveler initials (`name=T.D.`). These are **PII or PII-adjacent** under most interpretations. Never log them.
-- localStorage IS allowed to hold the resolved pathname + search verbatim — that's required for the feature to work and stays on-device.
-
-Events (full list — LP-002 / LP-006 implement):
-
-| Event | When | Payload |
+| # | Scenario | Behavior |
 |---|---|---|
-| `lastpage.write` | Successful store | `{ routeTemplate: string }` |
-| `lastpage.restore.attempted` | On cold open, after read | `{ hadStoredValue: boolean }` |
-| `lastpage.restore.succeeded` | Navigation complete to stored route | `{ routeTemplate: string }` |
-| `lastpage.restore.failed` | Fallback to `/` | `{ reason: <see §1.2 table>, routeTemplate?: string }` |
-| `lastpage.optout.changed` | D4 toggle flipped | `{ enabled: boolean }` |
-
-**Route-template resolution:** the Next.js `usePathname()` returns the resolved path. LP-002 must include a template-mapper utility that walks the route manifest and replaces dynamic segments with their bracketed names. If no template can be resolved (e.g. catch-all under feature flag), emit `routeTemplate: "<unknown>"` — never the raw value.
-
----
-
-## 3. Restore-failure toast
-
-When restore fails and the failure is **user-visible** (see §1.2 — schema/storage errors are silent):
-
-```
-┌───────────────────────────────────────────────────────────┐
-│ We couldn't reopen your last page.            [Dismiss ✕] │
-└───────────────────────────────────────────────────────────┘
-```
-
-- DOM: `<div role="status" aria-live="polite" data-testid="lastpage-restore-failed-toast">…</div>`
-- **`role="status"`, `aria-live="polite"`** — NOT `role="alert"`. This is informational; nothing failed that the user must act on. Per WAI-ARIA practices, `alert` is for critical/time-sensitive content and interrupts SR users mid-utterance. Polite status is correct.
-- Auto-dismiss: 5 seconds. Manual dismiss button always present.
-- Mount: 1 frame AFTER the navigation to `/` completes, so the SR announces "Home" first then the toast. Reverse order causes the toast to be drowned out.
-- Visual: matches existing app toast component (DM-001 `--color-bg-elevated` + `--color-border-subtle` + `--color-text-primary`). Use `--color-warn` icon prefix if a leading icon is present; do NOT use `--color-danger` (red implies the user did something wrong).
-- Does not reappear on subsequent navigations in the same session. One toast per cold open, max.
-- Reduced-motion: no slide-in transition under `prefers-reduced-motion: reduce`. Instant appear (DM-001 vestibular hazard precedent).
-- Touch target on dismiss: ≥44px mobile / ≥32px desktop (matches DM-001 + RM-002).
+| E1 | User on `/flights/search?from=TLV` closes tab, reopens `/` | Restore → `/flights/search?from=TLV` (silent) |
+| E2 | User on `/account/settings` closes, logs out elsewhere, reopens `/` | Stored value cleared on next mount (auth-gated check), stay on `/`, no toast |
+| E3 | User on `/login` closes, reopens `/` | `/login` was deny-listed → never stored → land on `/` |
+| E4 | User on `/oauth/callback?code=abc` closes, reopens `/` | `?code=` deny-listed → never stored → land on `/` |
+| E5 | User deep-links to `/vacations/123` from email | `history.length === 1 && pathname !== '/'` → restore skipped → user stays on `/vacations/123`; stored value (if any) NOT cleared |
+| E6 | Opt-out toggled OFF mid-session | setLastPage no-ops; existing stored value cleared synchronously on toggle |
+| E7 | Stored route `/promotions/expired-deal` returns 404 | not-found.tsx detects restoring breadcrumb → toast → `router.replace('/')` → stored value cleared |
+| E8 | Stored value malformed JSON or > 2KB | getLastPage returns null (LP-002 contract) → no-op |
+| E9 | Safari private mode (localStorage throws on write) | setLastPage swallows → app continues; restore never has data → no-op |
+| E10 | User has multiple tabs open, closes one on `/flights`, closes one on `/hotels` last | Last write wins (whichever tab navigated most recently) — acceptable for v1 |
+| E11 | New install (no stored value) | No-op. No toast. Land on `/` as today. |
+| E12 | Stored value points to a route that now requires a feature flag the user lacks | App's existing feature-flag guard renders not-found OR redirect-to-`/` → toast fires (treated as not-found from restore's perspective) |
+| E13 | User clicks browser back after restore | Browser history contains: `/` (initial) → `/flights/search` (replaced). Back goes to `/`. Acceptable — `router.replace` (not `push`) is correct. |
+| E14 | Stored value's search params include a now-removed param the app rejects | Route still mounts (Next.js doesn't 404 on unknown search params). App-level handling is the app's problem; restore considers it success. |
 
 ---
 
-## 4. Stored-value schema (normative)
+## 8. Non-goals (v1) — do not implement
 
-```ts
-// localStorage key: "ta.nav.lastPage.v1"
-type StoredLastPage = {
-  v: 1;                     // schema version. ALWAYS present. LP-002 reader rejects anything where v !== 1.
-  pathname: string;         // e.g. "/trips/abc-123". MUST start with "/". MUST NOT include origin.
-  search: string;           // e.g. "?from=TLV&to=JFK". May be "" (empty string, NOT undefined).
-  savedAt: number;          // Date.now() at write time. UTC ms epoch. Used for staleness gate (see §4.1).
-};
-```
-
-### 4.1 Staleness gate
-
-- If `Date.now() - savedAt > 30 days` → treat as invalid, reason `stale`. Add `stale` to the §1.2 table.
-- Rationale: a user returning after a month likely doesn't want to be dropped into a deep search-results page from a forgotten trip. Land on `/` instead.
-- 30 days is the locked number. Negotiable if sec-hard pushes back in LP-005, but XD recommendation is 30d.
-
-### 4.2 Reader behavior
-
-The reader function must be **total** (never throws into the React tree):
-
-```ts
-function readLastPage(): StoredLastPage | null {
-  try {
-    const raw = localStorage.getItem('ta.nav.lastPage.v1');
-    if (raw === null) return null;
-    const parsed = JSON.parse(raw);
-    if (typeof parsed !== 'object' || parsed === null) return null;
-    if (parsed.v !== 1) return null;
-    if (typeof parsed.pathname !== 'string' || !parsed.pathname.startsWith('/')) return null;
-    if (typeof parsed.search !== 'string') return null;
-    if (typeof parsed.savedAt !== 'number' || !Number.isFinite(parsed.savedAt)) return null;
-    return parsed as StoredLastPage;
-  } catch {
-    return null; // JSON.parse threw or localStorage threw (private mode / quota)
-  }
-}
-```
-
-### 4.3 Writer behavior
-
-- Debounce: 500ms trailing-edge per route change. (Rapid client-side navigation — e.g. step-through wizard — should not thrash localStorage.)
-- Idempotent: if the value to write equals the current stored value byte-for-byte, skip the `setItem` call entirely (avoids spurious `storage` events on other tabs).
-- Errors swallowed silently (private mode / quota / disabled storage). Emit nothing user-visible. Optionally telemetry `lastpage.write` with a `failed: true` flag (LP-006 decides).
+- Restoring scroll position (D1)
+- Restoring form state (D1)
+- Cross-device restore (D3)
+- "Welcome back" UI / animation (D6)
+- "Last 5 pages" history view
+- Pinning a "home page" different from `/`
+- Per-route opt-out (the global toggle is the only opt-out)
+- Restoring on hard refresh of a deep link (would override user intent — see E5)
 
 ---
 
-## 5. Test selectors (locked — QT writes E2E against these)
+## 9. Companion artifact: deny-list module
 
-| Element | Selector | Notes |
+Ships in this same PR at `apps/web/src/navigation/lastPage.denylist.ts` so semgrep, setter, and tests all import the same source of truth. See file.
+
+---
+
+## 10. Handoffs
+
+| Squad | Owes | Blocked-on |
 |---|---|---|
-| Settings opt-out checkbox | `[data-testid="settings-remember-last-page"]` | Native checkbox, `name="rememberLastPage"` |
-| Restore-failure toast | `[data-testid="lastpage-restore-failed-toast"]` | `role="status"`, contains exact string "We couldn't reopen your last page." |
-| Toast dismiss button | `[data-testid="lastpage-restore-failed-toast"] [data-testid="toast-dismiss"]` | aria-label="Dismiss" |
-
-QT does **not** need to test the localStorage contents directly — that's a unit-test concern in LP-002. E2E only asserts the user-visible outcomes (URL after cold open + toast presence/absence).
-
-### 5.1 E2E test matrix (handoff to QT for LP-004)
-
-| # | Setup | Cold-open expectation | Toast? |
-|---|---|---|---|
-| 1 | No stored value | URL = `/` | No |
-| 2 | Stored value = `/trips` (valid) | URL = `/trips` after hydration | No |
-| 3 | Stored value = `/trips/search?from=TLV&to=JFK` (valid) | URL = `/trips/search?from=TLV&to=JFK` | No |
-| 4 | Stored value = `/removed-route` (404) | URL = `/`, telemetry reason `route_removed` | Yes |
-| 5 | Stored value = `/account` (auth-gated), user signed out | URL = `/`, telemetry reason `auth_required` | Yes |
-| 6 | Stored value = `/auth/verify?token=abc` (deny-listed AND has token) | Value should never have been stored; if injected manually, URL = `/`, reason `deny_listed`. No leakage of `token` to telemetry. | Yes |
-| 7 | Stored value = `/login` (deny-listed) | URL = `/`, reason `deny_listed` | Yes |
-| 8 | Stored value = `{ v: 2, ... }` (future schema) | URL = `/`, reason `schema_invalid` | No |
-| 9 | Stored value = `{ v: 1, savedAt: <31d ago>, ... }` | URL = `/`, reason `stale` | Yes |
-| 10 | Opt-out OFF, stored value present | URL = `/`, stored value cleared by hook on mount | No |
-| 11 | Opt-out toggled OFF mid-session, then cold open | URL = `/`, no stored value present | No |
-| 12 | `localStorage.setItem` throws (quota) | URL = `/`, no crash, no toast | No |
+| app-dev | LP-002 setter consuming this deny-list; LP-003 hook implementing §3 tree; LP-004 settings UI per §5.3 + D4 copy | this doc (now ratified) |
+| security-hardening | LP-005 threat model citing §4 (D2) deny-list verbatim; semgrep rules including `no-lastpage-search-in-telemetry` (D5) | this doc (now ratified) |
+| quality-testing | LP-006 test matrix already drafted — E1..E14 from §7 should map to E2E scenarios | this doc (now ratified) |
+| review-deployment | LP-007 gate enforces invariants: storage key literal `ta.nav.lastPage.v1`, setter path `apps/web/src/navigation/setLastPage.ts`, deny-list path `apps/web/src/navigation/lastPage.denylist.ts` | nothing — go |
 
 ---
 
-## 6. Accessibility summary
+## 11. Versioning
 
-- All new interactive elements use native HTML semantics (`<input type="checkbox">`, native `<button>` for toast dismiss). No custom widgets, no ARIA shims.
-- Toast is `role="status"` polite (§3). Never `role="alert"`.
-- Focus: restore navigation MUST move focus to the page's `<h1>` (matches existing app post-navigation focus contract — confirm with app-dev in LP-003; if no such contract exists, LP-003 is responsible for establishing it). Toast does NOT steal focus.
-- Reduced motion respected on toast entrance.
-- Touch targets ≥44px mobile / ≥32px desktop.
-- All copy: plain-language, 8th-grade reading level. No jargon ("restore", "session", "state" avoided in user-facing strings).
-
----
-
-## 7. Out of scope (explicit non-goals for LP-001)
-
-- Cross-device restore (D3, v2)
-- Scroll position restoration (D1, separate feature)
-- Form-draft restoration (D1, separate feature with privacy review)
-- Modal/drawer reopening (D1, separate feature)
-- A "go back to last session" CTA on `/` (different feature — pull vs push)
-- Multi-tab coordination — last write wins. If user has the app open in two tabs and navigates in both, the more recent navigation's value is what restores on cold open.
-
----
-
-## 8. Handoff
-
-- **LP-002 (app-dev):** implement `packages/web/src/last-page/` — `deny-list.ts`, `storage.ts` (reader/writer from §4), `useLastPageRestore.ts` hook driving §1 decision tree. Mirror the deny-list verbatim from this doc.
-- **LP-003 (app-dev):** integrate restore into route-guard / app-shell so it runs post-hydration before any user interaction. Establish the post-navigation focus-on-`<h1>` contract if not already in place.
-- **LP-004 (QT):** E2E from §5.1. Unit tests on `readLastPage` covering every §4.2 rejection path.
-- **LP-005 (sec-hard):** threat model. Specifically: (a) localStorage as a write target from malicious extensions / XSS — does our restore widen any attack surface? (b) deny-list completeness against the current route table. (c) confirm 30d staleness gate is acceptable; if not, propose alternative. (d) confirm no need to encrypt at rest (XD says no — pathname is not a secret).
-- **LP-006 (app-dev):** wire telemetry events from §2 D5. Server-side OTel counter pattern (DM-006 precedent).
-- **LP-007 (rev-deploy):** PR rollup, transplant XD branch via `tamirdresher` keyring (EMU still blocks `tamirdresher_microsoft`).
-
----
-
-## 9. Open questions routed out
-
-- **To sec-hard (LP-005):** ratify 30d staleness gate; ratify deny-list; flag any additional search-param keys to add to `DENY_SEARCH_KEYS`.
-- **To app-dev (LP-003):** confirm existing post-navigation focus convention OR establish it now.
-- **To planning:** v2 cross-device restore — when, and gated on what? Not blocking this PR.
-
-— experience-design-squad, 2026-06-23
-
----
-
-## 6. Contract reconciliation (2026-06-23, post LP-005 sign-off)
-
-Initial XD draft had drifted key names. Locked canonical values below — these are what LP-002 implements, LP-005 semgrep enforces, LP-006 tests, LP-007 gates. Reader+writer in this doc above have been updated in-place; this table is the single quick-reference for downstream squads.
-
-| Concern | Canonical value | Owner-of-record | Drift was |
-|---|---|---|---|
-| Stored-route key | `ta.nav.lastPage.v1` (literal) | sec-hard LP-005 §3 | XD said `ta.lastPage` |
-| Opt-out key | `ta.nav.lastPage.optOut.v1` (literal) | sec-hard LP-005 | XD said `ta.lastPage.enabled` (also inverted semantics — see note in §2/D4) |
-| Setter module path | `apps/web/src/navigation/setLastPage.ts` | planning LP-002 + app-dev scaffold on disk | sec-hard message said `nav/`; the canonical path is `navigation/` because app-dev already scaffolded there (verified on `feature/last-viewed-page` working tree). Filing back to sec-hard as a semgrep rule-path correction. |
-| Validator regex | `/^\/[A-Za-z0-9/_\-]*(\?[A-Za-z0-9=&_\-%.,]*)?$/`, anchored, max 1024 chars, decode-re-check, run on write AND read | sec-hard LP-005 §3.1 | XD did not specify regex (correctly deferred to sec) |
-| Token-param deny-list | sec-hard `TOKEN_PARAM_DENYLIST` in `docs/security/last-viewed-page-threat-model.md` §3.2 — strip ALL params if ANY match, store `search: ''` | sec-hard LP-005 §3.2 | XD's D2 deny-list listed only `token\|code\|state\|session\|otp` — superseded by sec-hard's longer canonical list |
-| Serialized payload cap | 2KB (sec-hard §7); reader clears + returns null if exceeded | sec-hard LP-005 §7 | XD did not cap |
-| Staleness gate | 30d (XD §4.1 stands — sec-hard did not counter) | XD LP-001 §4.1 | — |
-| Opt-out test selectors | `data-testid="settings-remember-last-page"`, `name="rememberLastPage"`, `id="settings-remember-last-page"` | XD LP-001 §5 | — (DOM contract preserved) |
-| Toast contract | `role="status" aria-live="polite" data-testid="lastpage-restore-failed-toast"` | XD LP-001 §3 | — |
-
-**Semantic inversion gotcha for LP-002:** the preference key is named `optOut`, NOT `enabled`. App-dev hook pseudocode:
-
-```ts
-const optedOut = localStorage.getItem('ta.nav.lastPage.optOut.v1') === 'true';
-const featureEnabled = !optedOut; // default: feature ON when key absent
-```
-
-The Settings checkbox UI still presents as **"Remember the last page I was on"** with `checked = featureEnabled`. On user uncheck → write `'true'` to the optOut key + `removeItem('ta.nav.lastPage.v1')`. On user check → write `'false'` (or `removeItem`, treat as default). UI label/copy in §2/D4 is UNCHANGED — the inversion is purely a storage detail.
-
-**No other XD contracts changed.** First-paint behavior, route-template-only telemetry, restore-failure toast, 12-row E2E matrix, microcopy, opt-out flow, focus/SR/touch contracts all stand as written.
+This is v1 of the UX contract. Material changes (any change to D1–D6, the deny-list, the failure toast copy, or §2) require an RFC + ratification by ideation-research-planning. Cosmetic edits (typos, clarifications, additional edge cases in §7) may land directly.
