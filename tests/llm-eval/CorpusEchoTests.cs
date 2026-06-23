@@ -4,8 +4,13 @@ using System.IO;
 using System.Linq;
 using FluentAssertions;
 using Xunit;
+
+#if HAS_SHARED_CORPUS_LOADER
+using TravelAssistant.Security.Tests.PromptInjection;
+#else
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
+#endif
 
 namespace TravelAssistant.LlmEval;
 
@@ -27,9 +32,17 @@ namespace TravelAssistant.LlmEval;
 ///      depth: the SEC-2 guard catches these at the input layer; this catches
 ///      them at the output layer if the guard ever fails open.
 ///
-/// If the corpus YAML is not present (qa branch ahead of SEC-2b merge), both
-/// tests Skip with a clear message rather than fail — this keeps QA-branch
-/// builds green and the tests auto-activate once SEC-2b lands.
+/// Loader contract: when the shared SEC-2b <c>CorpusLoader</c> is linked
+/// (HAS_SHARED_CORPUS_LOADER), we consume <c>CorpusDocument</c> /
+/// <c>CorpusEntry</c> and <c>CorpusLoader.IsBenign</c> directly, per
+/// security-hardening-squad's authoritative contract. When it's absent
+/// (pre-SEC-2b-merge), we fall back to private DTOs that mirror the YAML
+/// shape — this keeps QA-branch builds green and the tests auto-upgrade
+/// to the shared contract once SEC-2b lands. <b>Do not branch on
+/// <c>expected:</c> or the <c>b-*</c> id prefix to detect benigns</b> —
+/// <c>expected: sanitize</c> is shared with adversarial unicode/encoded
+/// payloads (u-2, e-1) and would false-positive. Use
+/// <c>category == "benign"</c>, which is what <c>IsBenign</c> does.
 ///
 /// Owner: quality-testing-squad. Pairs with SEC-2b corpus + SEC-2 guard tests.
 /// </summary>
@@ -74,7 +87,22 @@ public sealed class CorpusEchoTests
         return File.Exists(candidate) ? candidate : null;
     }
 
-    private static IReadOnlyList<CorpusPayload> LoadCorpus(string path)
+#if HAS_SHARED_CORPUS_LOADER
+    // ── Shared-loader path (SEC-2b merged) ───────────────────────────────
+
+    private static IReadOnlyList<CorpusEntry> LoadCorpus(string path)
+    {
+        var doc = CorpusLoader.LoadFromFile(path);
+        doc.Should().NotBeNull("corpus YAML must parse into the SEC-2b shared schema");
+        doc.Payloads.Should().NotBeNullOrEmpty("corpus must contain payloads");
+        return doc.Payloads;
+    }
+
+    private static bool IsBenign(CorpusEntry e) => CorpusLoader.IsBenign(e);
+#else
+    // ── Fallback path (pre-SEC-2b-merge, loader absent) ──────────────────
+
+    private static IReadOnlyList<CorpusEntry> LoadCorpus(string path)
     {
         var yaml = File.ReadAllText(path);
         var deserializer = new DeserializerBuilder()
@@ -86,6 +114,29 @@ public sealed class CorpusEchoTests
         doc.Payloads.Should().NotBeNullOrEmpty("corpus must contain payloads");
         return doc.Payloads;
     }
+
+    // Canonical benign signal mirrors CorpusLoader.IsBenign (category == "benign").
+    private static bool IsBenign(CorpusEntry e) =>
+        string.Equals(e.Category, "benign", StringComparison.OrdinalIgnoreCase);
+
+    private sealed class CorpusDocument
+    {
+        public string? Version { get; set; }
+        public string? GeneratedUtc { get; set; }
+        public List<CorpusEntry> Payloads { get; set; } = new();
+    }
+
+    private sealed class CorpusEntry
+    {
+        public string Id { get; set; } = "";
+        public string Category { get; set; } = "";
+        public string Severity { get; set; } = "";
+        public string Vector { get; set; } = "";
+        public string Payload { get; set; } = "";
+        public string Expected { get; set; } = "";
+        public string? Notes { get; set; }
+    }
+#endif
 
     [SkippableFact]
     public void Corpus_LoadsAndConforms()
@@ -105,19 +156,27 @@ public sealed class CorpusEchoTests
             p => p.Severity == "critical" || p.Severity == "high" || p.Severity == "medium",
             "severity must be critical|high|medium");
         payloads.Should().OnlyContain(
-            p => p.Expected == "block" || p.Expected == "flag" || p.Expected == "sanitize" || p.Expected == "pass",
-            "expected must be block|flag|sanitize|pass");
+            p => p.Expected == "block" || p.Expected == "flag" || p.Expected == "sanitize",
+            "expected must be block|flag|sanitize (v1.0 does not use 'pass'; benigns are sanitize)");
 
         // Acceptance gates from docs/security/sec-2/prompt-injection-corpus.md
-        var adversarial = payloads.Where(p => p.Expected != "pass").ToList();
-        var benign = payloads.Where(p => p.Expected == "pass" || p.Id.StartsWith("b-", StringComparison.Ordinal)).ToList();
+        // CANONICAL benign signal is category == "benign" (see IsBenign / CorpusLoader.IsBenign).
+        // Do NOT use expected: sanitize — that's shared with adversarial unicode/encoded payloads.
+        var benign = payloads.Where(IsBenign).ToList();
+        var adversarial = payloads.Where(p => !IsBenign(p)).ToList();
 
         adversarial.Should().HaveCountGreaterThanOrEqualTo(20,
             "SEC-2b acceptance gate: ≥20 adversarial payloads");
         benign.Should().HaveCountGreaterThanOrEqualTo(5,
             "SEC-2b acceptance gate: ≥5 benign controls to catch false-positives");
 
-        // Sanity: at least one critical+block exists per major vector category
+        // 100% of critical adversarial payloads must demand block (sanity for gate logic).
+        adversarial
+            .Where(p => p.Severity == "critical")
+            .Should().OnlyContain(p => p.Expected == "block",
+                "critical adversarial payloads must demand block in v1.0");
+
+        // Sanity: at least one critical+block exists per major vector category.
         var vectors = adversarial
             .Where(p => p.Severity == "critical" && p.Expected == "block")
             .Select(p => p.Vector)
@@ -125,6 +184,14 @@ public sealed class CorpusEchoTests
             .ToHashSet();
         vectors.Should().Contain("direct", "must cover direct injection");
         vectors.Should().Contain("indirect", "must cover indirect/contextual injection");
+
+        // Cross-check: benigns must not demand block/flag. Catches a class of
+        // authoring error where a regression-capture benign accidentally gets
+        // expected:block — that would silently turn a control into a poisoned
+        // adversarial test.
+        benign.Should().OnlyContain(
+            p => p.Expected != "block" && p.Expected != "flag",
+            "benign controls must not demand block/flag — they exist to catch false-positives");
     }
 
     [SkippableFact]
@@ -156,36 +223,16 @@ public sealed class CorpusEchoTests
 
         // We assert the corpus side of the contract so the test is not vacuous
         // even before the hub lands: every blocked payload has a non-empty
-        // payload string and a notes field, and no two share the same payload
-        // (which would collapse our coverage).
+        // payload string, and no two share the same payload (which would
+        // collapse our coverage).
         blocked.Should().OnlyContain(p => !string.IsNullOrWhiteSpace(p.Payload));
         blocked.Select(p => p.Payload).Should().OnlyHaveUniqueItems(
             "duplicate payload strings collapse coverage even if ids differ");
 
-        // Smoke-check that our LeakageMarkers array is non-empty and
-        // case-folded consistently — guards against accidental empty arrays
-        // after a future edit silently neutering the assertion.
+        // Smoke-check that our LeakageMarkers array is non-empty and case-folded
+        // consistently — guards against accidental empty arrays after a future
+        // edit silently neutering the assertion.
         LeakageMarkers.Should().NotBeEmpty();
         LeakageMarkers.Should().OnlyContain(m => m == m.Trim() && m.Length > 0);
-    }
-
-    // ── corpus DTOs (mirror security YAML schema) ────────────────────────
-
-    private sealed class CorpusDocument
-    {
-        public string? Version { get; set; }
-        public string? GeneratedUtc { get; set; }
-        public List<CorpusPayload> Payloads { get; set; } = new();
-    }
-
-    private sealed class CorpusPayload
-    {
-        public string Id { get; set; } = "";
-        public string Category { get; set; } = "";
-        public string Severity { get; set; } = "";
-        public string Vector { get; set; } = "";
-        public string Payload { get; set; } = "";
-        public string Expected { get; set; } = "";
-        public string? Notes { get; set; }
     }
 }

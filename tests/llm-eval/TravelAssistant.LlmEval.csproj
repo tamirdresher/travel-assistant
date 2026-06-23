@@ -35,4 +35,28 @@
           CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <!--
+    Shared CorpusLoader (SEC-2b). Source-include rather than ProjectReference so
+    this project stays unblocked on QA branches before the Security.Tests csproj
+    exists. Conditional: links only when the file is present on disk, and
+    defines HAS_SHARED_CORPUS_LOADER so CorpusEchoTests can switch contracts
+    safely (private DTOs when absent, shared types when present).
+    Owner of contract: security-hardening-squad. Do NOT duplicate the DTOs here.
+  -->
+  <ItemGroup Condition="Exists('$(MSBuildProjectDirectory)\..\TravelAssistant.Security.Tests\PromptInjection\CorpusLoader.cs')">
+    <Compile Include="..\TravelAssistant.Security.Tests\PromptInjection\CorpusLoader.cs"
+             Link="Shared\CorpusLoader.cs" />
+  </ItemGroup>
+  <PropertyGroup Condition="Exists('$(MSBuildProjectDirectory)\..\TravelAssistant.Security.Tests\PromptInjection\CorpusLoader.cs')">
+    <DefineConstants>$(DefineConstants);HAS_SHARED_CORPUS_LOADER</DefineConstants>
+    <!--
+      Suppress CA1062 (validate public method args for null) on the linked
+      CorpusLoader. The loader is owned by security-hardening-squad and its
+      public API treats null as a programmer error. Filed upstream: ping
+      security to add ArgumentNullException.ThrowIfNull in v1.1 of the loader.
+      Scoped to this project only — does not weaken QA's own code analysis.
+    -->
+    <NoWarn>$(NoWarn);CA1062</NoWarn>
+  </PropertyGroup>
+
 </Project>
