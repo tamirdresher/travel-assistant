@@ -1,0 +1,13 @@
+{
+  "id": "G-001",
+  "tags": ["happy-path", "single-traveler", "round-trip"],
+  "description": "Baseline: one traveler asks for a 3-day Paris trip from NYC. Agent should call flight + hotel providers, return a Grounded TripPlan with IATA codes and totalCost.",
+  "messages": [
+    { "role": "user", "content": "I want a 3-day trip to Paris from New York for one person next month, budget around $2500." }
+  ],
+  "must_include": ["JFK", "CDG", "totalCost", "currency"],
+  "must_not_include": ["I cannot", "I don't have access", "Pending"],
+  "expected_provider_calls": { "flights": 1, "hotels": 1 },
+  "expected_status": "Grounded",
+  "min_sources": 2
+}

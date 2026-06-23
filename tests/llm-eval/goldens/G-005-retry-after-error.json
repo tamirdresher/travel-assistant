@@ -1,0 +1,18 @@
+{
+  "id": "G-005",
+  "tags": ["retry", "idempotency", "error-recovery", "xd-2-s8"],
+  "description": "XD-2 §8 scenario 2: backend emits turn.error{retriable:true}. Client replays the SAME turnId. Server must dedup — only one logical turn is processed; provider calls happen at most once across the two attempts; final TripPlan is identical to a clean single-attempt run.",
+  "messages": [
+    { "role": "user", "content": "Book a weekend in Barcelona from Madrid for one person, mid-range hotel, leaving Friday returning Sunday." }
+  ],
+  "must_include": ["BCN", "MAD", "totalCost"],
+  "must_not_include": ["I cannot", "duplicate"],
+  "expected_provider_calls": { "flights": 1, "hotels": 1 },
+  "expected_status": "Grounded",
+  "min_sources": 2,
+  "lifecycle_assertions": {
+    "turn_id_replayed_once": true,
+    "provider_calls_deduped": true,
+    "events_required": ["turn.error:retriable", "turn.start", "turn.end:success"]
+  }
+}

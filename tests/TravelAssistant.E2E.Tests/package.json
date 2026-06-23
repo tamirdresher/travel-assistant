@@ -1,0 +1,16 @@
+{
+  "name": "travel-assistant-e2e",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Playwright E2E + axe-core a11y (QA-1, QA-3).",
+  "scripts": {
+    "test": "playwright test",
+    "test:a11y": "playwright test --grep @a11y",
+    "test:smoke": "playwright test --grep @smoke",
+    "install:browsers": "playwright install --with-deps chromium"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.10.0",
+    "@playwright/test": "^1.48.0"
+  }
+}

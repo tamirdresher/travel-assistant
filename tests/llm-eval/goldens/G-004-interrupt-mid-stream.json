@@ -1,0 +1,19 @@
+{
+  "id": "G-004",
+  "tags": ["streaming", "cancel", "rollback", "xd-2-s8"],
+  "description": "XD-2 §8 scenario 1: user hits Esc mid-stream. Client emits turn.cancel; server stops token emission; any 'pending' itinerary patches issued during this turn must be rolled back. Assistant's final visible state should match the 'Stopped' copy template.",
+  "messages": [
+    { "role": "user", "content": "Plan me a 5-day Tokyo trip in October for two travelers, hotel near Shinjuku, business class flights from SFO." },
+    { "role": "user", "content": "__SIMULATE_CANCEL__" }
+  ],
+  "must_include": ["Stopped"],
+  "must_not_include": ["totalCost", "flightNumber", "Grounded"],
+  "expected_provider_calls": { "flights": 0, "hotels": 0 },
+  "expected_status": "Pending",
+  "min_sources": 0,
+  "lifecycle_assertions": {
+    "events_emitted_subset": ["turn.start", "token", "turn.cancel"],
+    "events_forbidden": ["turn.end:success"],
+    "pending_patches_rolled_back": true
+  }
+}

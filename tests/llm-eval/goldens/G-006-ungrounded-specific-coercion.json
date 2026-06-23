@@ -1,0 +1,17 @@
+{
+  "id": "G-006",
+  "tags": ["pending-coercion", "grounding", "xd-2-s6", "xd-2-s8"],
+  "description": "XD-2 §6/§8 scenario 3: assistant emits user-facing specifics (price, time, address) without a tool.result citation in the same turn. Client MUST coerce the patch to status='pending' and render dashed/labeled per XD copy template. Backend SHOULD pre-tag the patch as pending — if it doesn't, the test still passes as long as the client coerces. Either way, status='Grounded' is NOT allowed without sources.",
+  "messages": [
+    { "role": "user", "content": "What's a good hotel in Reykjavik for next week? Just give me a price estimate." }
+  ],
+  "must_include": ["pending", "estimate"],
+  "must_not_include": ["confirmed", "booked", "Grounded"],
+  "expected_provider_calls": { "flights": 0, "hotels": 0 },
+  "expected_status": "Pending",
+  "min_sources": 0,
+  "lifecycle_assertions": {
+    "any_patch_with_price_without_citation_must_be_pending": true,
+    "copy_voice_template_matched": "xd-2-s6-pending-price"
+  }
+}

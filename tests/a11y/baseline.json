@@ -1,0 +1,17 @@
+{
+  "_comment": "XD-4 aggregated a11y baseline. Per-route baselines (chat.json/home.json/login.json) under tests/TravelAssistant.E2E.Tests/a11y-baselines/ are the authoritative per-screen allowlists; this file mirrors the union for tooling that expects a single artifact path (e.g. PR comment bot, XD review). Refresh by running E2E_A11Y_UPDATE_BASELINE=1 npx playwright test --grep @a11y then regenerating this file via scripts/a11y/sync-baseline.mjs.",
+  "schema_version": 1,
+  "wcag_tags": ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"],
+  "routes": {
+    "/": { "allowed": [], "states_covered": ["default"] },
+    "/chat": { "allowed": [], "states_covered": ["empty", "streaming", "pending-patch", "error", "post-cancel", "loaded"] },
+    "/login": { "allowed": [], "states_covered": ["default", "error", "rate-limited"] }
+  },
+  "screen_state_matrix_source": "docs/design/ia.md#2-screen-coverage-matrix",
+  "non_axe_checks": [
+    "keyboard-only navigation (Tab/Shift+Tab/Esc/Enter)",
+    "screen-reader landmark hierarchy",
+    "prefers-reduced-motion honored for streaming token animation",
+    "color contrast in dark mode"
+  ]
+}
