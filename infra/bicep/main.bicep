@@ -17,6 +17,16 @@ param tags object = {
   managedBy: 'bicep'
 }
 
+@description('Refresh token signing key (HMAC). Pass via pipeline secret or generate with: openssl rand -base64 64')
+@secure()
+param refreshTokenSigningKey string
+
+@description('Long-lived ("remember me") refresh token TTL in seconds. Default 30 days.')
+param refreshTokenLongTtlSeconds int = 2592000
+
+@description('Auth cookie domain for this environment (e.g., .dev.travel-assistant.example.com)')
+param authCookieDomain string
+
 // Outputs from modules
 var logWorkspaceName = '${resourcePrefix}-${environmentName}-logs'
 var appInsightsName = '${resourcePrefix}-${environmentName}-ai'
@@ -68,6 +78,20 @@ module keyVault './modules/keyVault.bicep' = {
   }
 }
 
+// 4b. Auth refresh-token secrets (depends on Key Vault)
+//     Owns: signing key, standard TTL, long-lived TTL (remember-me), cookie domain, SameSite.
+//     Browser-side telemetry stays deferred per DM-006; server-side OTel counters live in API code.
+module authSecrets './modules/authSecrets.bicep' = {
+  name: 'authSecrets-deployment'
+  params: {
+    keyVaultName: keyVault.outputs.keyVaultName
+    refreshTokenSigningKey: refreshTokenSigningKey
+    refreshTokenLongTtlSeconds: refreshTokenLongTtlSeconds
+    authCookieDomain: authCookieDomain
+    authCookieSameSite: 'Lax'
+  }
+}
+
 // 5. Static Web App (free tier for Next.js frontend)
 module staticWebApp './modules/staticWebApp.bicep' = {
   name: 'staticWebApp-deployment'
@@ -93,3 +117,6 @@ output keyVaultUri string = keyVault.outputs.keyVaultUri
 output keyVaultName string = keyVault.outputs.keyVaultName
 output staticWebAppDefaultHostname string = staticWebApp.outputs.defaultHostname
 output staticWebAppName string = staticWebApp.outputs.staticWebAppName
+output authRefreshTokenSigningKeySecretUri string = authSecrets.outputs.signingKeySecretUri
+output authRefreshTokenLongTtlSecretUri string = authSecrets.outputs.longTtlSecretUri
+output authCookieDomainSecretUri string = authSecrets.outputs.cookieDomainSecretUri
