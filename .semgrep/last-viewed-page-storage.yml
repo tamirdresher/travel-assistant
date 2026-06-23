@@ -12,8 +12,8 @@ rules:
       include:
         - apps/web/**
       exclude:
-        - apps/web/src/nav/setLastPage.ts
-        - apps/web/src/nav/lastPageStorage.ts
+        - apps/web/src/navigation/setLastPage.ts
+        - apps/web/src/navigation/lastPageStorage.ts
         - "**/*.test.ts"
         - "**/*.test.tsx"
         - "**/*.spec.ts"
@@ -33,7 +33,7 @@ rules:
     languages: [ts, tsx, js, jsx]
     paths:
       include:
-        - apps/web/src/nav/**
+        - apps/web/src/navigation/**
     pattern-either:
       - pattern: localStorage.setItem(`ta.nav.lastPage$...`, ...)
       - pattern: localStorage.getItem(`ta.nav.lastPage$...`)
@@ -110,3 +110,75 @@ rules:
     pattern-either:
       - pattern: setLastPage(...)
       - pattern: lastPageStorage.set(...)
+
+  # ─── LP-001 alignment (XD shipped denylist as code @ squad-with-aspire 2180d3f) ───
+
+  - id: lastpage-must-import-canonical-denylist
+    message: >-
+      The deny-list is the single source of truth at
+      apps/web/src/navigation/lastPage.denylist.ts (exports PATHNAME_DENY_PATTERNS,
+      SEARCH_DENY_PATTERNS, isDenied, isSafeRelativePath). Inline regex arrays or
+      duplicated literal lists fragment enforcement (LP-005 §3.2 + LP-001 D2).
+    severity: ERROR
+    languages: [ts, tsx, js, jsx]
+    paths:
+      include:
+        - apps/web/src/navigation/**
+      exclude:
+        - apps/web/src/navigation/lastPage.denylist.ts
+        - apps/web/src/navigation/denyList.ts
+        - "**/*.test.*"
+        - "**/__tests__/**"
+    pattern-either:
+      - pattern: const PATHNAME_DENY_PATTERNS = [...]
+      - pattern: const SEARCH_DENY_PATTERNS = [...]
+      - pattern: const lastPageDeny = [...]
+      - pattern: const LASTPAGE_DENY = [...]
+
+  - id: lastpage-restore-must-call-issaferelativepath
+    message: >-
+      Any router.replace/router.push driven by a value originating from
+      getLastPage() / localStorage.getItem('ta.nav.lastPage.v1') MUST be gated by
+      isSafeRelativePath() AND isDenied() from
+      apps/web/src/navigation/lastPage.denylist.ts. Reader re-validates — storage
+      is untrusted input (LP-005 §3.1, §8.3).
+    severity: ERROR
+    languages: [ts, tsx, js, jsx]
+    paths:
+      include:
+        - apps/web/**
+      exclude:
+        - "**/*.test.*"
+        - "**/__tests__/**"
+    pattern-either:
+      - pattern: |
+          $X = localStorage.getItem("ta.nav.lastPage.v1");
+          ...
+          router.$M($X)
+      - pattern: |
+          $X = localStorage.getItem('ta.nav.lastPage.v1');
+          ...
+          router.$M($X)
+
+  - id: no-lastpage-restoring-breadcrumb-misuse
+    message: >-
+      The sessionStorage breadcrumb 'ta.nav.lastPage.restoring' is RESERVED for
+      not-found.tsx → restore-failure detection (LP-001 spec §3, blessed by
+      LP-005 addendum A1). It MUST be transient: set immediately before
+      router.replace, cleared on destination mount or after one tick. Do not
+      stash routes, params, or PII in it.
+    severity: WARNING
+    languages: [ts, tsx, js, jsx]
+    paths:
+      include:
+        - apps/web/**
+      exclude:
+        - apps/web/src/navigation/**
+        - "**/not-found.tsx"
+        - "**/*.test.*"
+        - "**/__tests__/**"
+    pattern-either:
+      - pattern: sessionStorage.setItem("ta.nav.lastPage.restoring", ...)
+      - pattern: sessionStorage.setItem('ta.nav.lastPage.restoring', ...)
+      - pattern: window.sessionStorage.setItem("ta.nav.lastPage.restoring", ...)
+      - pattern: window.sessionStorage.setItem('ta.nav.lastPage.restoring', ...)

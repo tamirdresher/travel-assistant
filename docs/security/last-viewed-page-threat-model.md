@@ -146,4 +146,36 @@ Both PRs are blocked until ALL items below are demonstrated:
 
 ---
 
+## Addendum A — LP-001 alignment (XD shipped denylist-as-code @ squad-with-aspire 2180d3f)
+
+The deny-list is now a **TypeScript module**, not prose. Canonical path:
+`apps/web/src/navigation/lastPage.denylist.ts` — exports:
+
+- `PATHNAME_DENY_PATTERNS: readonly RegExp[]` (8 patterns)
+- `SEARCH_DENY_PATTERNS: readonly RegExp[]` (9 patterns: token, code, id_token, state, access_token, refresh_token, session, otp, password — case-insensitive)
+- `isDenied(pathname, search): boolean`
+- `isSafeRelativePath(pathWithSearch): boolean` (rejects absolute, `//`, `javascript:`, `data:`, CRLF, `%2F%2F`, >1KB)
+
+**A1 — sessionStorage breadcrumb `ta.nav.lastPage.restoring`: BLESSED.**
+Transient, no PII, single-tick lifetime. Used by `not-found.tsx` to detect 404-on-restore and route back to `/` with the failure toast. STRIDE coverage:
+- I (Disclosure): N/A — value is a constant `"1"` or `pathname` (already validated through `isSafeRelativePath`); no tokens, no search params.
+- T (Tampering): if user mutates it, worst case = false-positive 404 toast on a fresh navigation. Self-healing on next mount.
+- R (Repudiation), E (EoP), DoS: N/A — bounded to 8 bytes, cleared automatically.
+- Constraint: WARNING-level semgrep rule `no-lastpage-restoring-breadcrumb-misuse` restricts writes to `not-found.tsx` + the navigation module — keeps the breadcrumb from becoming a general-purpose stash.
+
+**A2 — Telemetry event names locked (LP-001 D5).** The following four events are the ONLY allowed names; their attribute objects MUST contain `pathname` (route-template form preferred — `/trips/[id]`, not `/trips/123`) and MUST NOT contain `search`, `lastPage.search`, or any value derived from `URLSearchParams.toString()`:
+
+- `nav.lastpage.stored`
+- `nav.lastpage.restored`
+- `nav.lastpage.restore_skipped`
+- `nav.lastpage.restore_failed`
+
+Enforced by existing rule `no-lastpage-search-in-telemetry` (§8.7).
+
+**A3 — Symbol contract pinned for semgrep.** Rules `lastpage-must-import-canonical-denylist` and `lastpage-restore-must-call-issaferelativepath` reject inline `PATHNAME_DENY_PATTERNS` / `SEARCH_DENY_PATTERNS` arrays anywhere outside the module, and require `isSafeRelativePath` + `isDenied` to bracket any `router.replace/router.push` whose argument originated from `localStorage.getItem('ta.nav.lastPage.v1')`.
+
+**A4 — Migration note.** The stub at `apps/web/src/navigation/denyList.ts` (exporting only `isDeniedPath`) is the LP-002 placeholder. When XD's LP-001 module lands on travel-assistant, delete the stub and re-point imports to `lastPage.denylist.ts`. Until then both filenames are exempted from `lastpage-must-import-canonical-denylist`.
+
+---
+
 LP-005: APPROVED
