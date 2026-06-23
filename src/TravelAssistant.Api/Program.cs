@@ -1,6 +1,11 @@
 using Serilog;
+using TravelAssistant.Api.Auth;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// RM-004: refresh-token store (in-memory scaffold; swap for EF Core in prod).
+builder.Services.AddSingleton<IRefreshTokenStore, InMemoryRefreshTokenStore>();
+builder.Services.AddSingleton(TimeProvider.System);
 
 // Configure Serilog
 builder.Host.UseSerilog((context, configuration) =>
@@ -53,7 +58,12 @@ app.MapPost("/api/search", (SearchRequest request) =>
 .WithTags("Search")
 .Produces<SearchResponse>(StatusCodes.Status200OK);
 
+// RM-004: login + refresh endpoints with RememberMe-driven TTL.
+app.MapAuthEndpoints();
+
 app.Run();
+
+public partial class Program { } // for WebApplicationFactory<Program> in tests
 
 // Request/Response DTOs
 record SearchRequest(string[]? Destinations, DateOnly? DepartureDate, DateOnly? ReturnDate, int? PassengerCount);
